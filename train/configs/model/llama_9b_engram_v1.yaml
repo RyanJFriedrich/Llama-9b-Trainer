@@ -1,0 +1,96 @@
+# Llama-9B production model config — Engram ENABLED.
+# Identical to llama_8bpp_v1.yaml except engram.enabled: true (the locked
+# §3.6 component, co-trained from step 0). This is the config for box
+# bring-up (bf16 reference smoke, FP8 overlay) and the first real run.
+
+vocab_size: 128256          # [LOCKED] Llama 3.1 BPE, unmodified (spec §2)
+hidden_size: 4096           # [LOCKED] donor geometry (spec §3.1)
+num_hidden_layers: 33       # [LOCKED] 8x [SWA,SWA,SWA,GLOBAL] + gather (spec §3.1)
+layer_types:
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - gather
+num_attention_heads: 32     # [LOCKED] GQA 32 Q / 8 KV
+num_key_value_heads: 8
+head_dim: 128
+intermediate_size: 14336    # [LOCKED] SwiGLU
+rms_norm_eps: 1.0e-05
+tie_word_embeddings: false  # [LOCKED] untied (spec §2)
+
+swa:
+  window: 4096              # [LOCKED] final window (spec §3.2); offsets <= 4095 (I7)
+  rope_theta: 10000.0       # [LOCKED] bare theta (spec §3.2)
+  sink:
+    type: learned_logit     # [LOCKED] per-head sink logit, no KV footprint
+    init: -10.0             # [LOCKED] near-no-op at init (invariant I4)
+
+global:
+  rope_type: prope          # [LOCKED] partial RoPE (spec §3.3 v2.1: NeoX-style
+                          # slice, frequencies over the slice's own dim)
+  rope_fraction: 0.25       # [LOCKED] rotate the first 32 dims (16 pairs) only
+  rope_theta: 1000000.0     # [LOCKED] bare theta
+  qk_norm: false            # [LOCKED] no QK-norm anywhere (spec §3.2)
+
+gather:
+  rope_type: prope          # [LOCKED] same positional family as the globals
+  rope_fraction: 0.25
+  rope_theta: 1000000.0
+  qk_norm: false            # [LOCKED]
+  init: identity_from_layer_31  # [LOCKED] zeroed o_proj/down_proj (exact no-op at init)
+  position: 32              # [EXPERIMENTAL] gather_position: 30 ablation, default last
+
+attn_res:
+  enabled: true             # [EXPERIMENTAL] flag, default ON (spec §3.5)
+  scope: all_layers         # [FLEXIBLE] all_layers (66 points) | globals_only (9)
+  sources: embedding_plus_block_delta_sums_plus_partial  # [LOCKED] never stream snapshots
+  keys: rmsnorm             # [LOCKED] keys-only norm
+  values: raw               # [LOCKED] never normalize values into the sum
+  pseudo_query_init: zeros  # [LOCKED] uniform softmax at init -> exact PreNorm input (I3)
+  gate: false               # [EXPERIMENTAL] scalar gate per application point, default OFF
+
+engram:
+  enabled: true             # [LOCKED component] spec §3.6 + annex A1 (v1.1)
+  orders: [1, 2, 3]
+  heads_per_order: 2
+  row_dim: 256
+  rows_per_head: { 2: [1048573, 1048571], 3: [1048559, 1048549] }
+                          # annex A1.4: distinct primes per (order, head);
+                          # order 1 derived from the canon artifact (annex
+                          # v1.1: smallest prime >= max(canonical_id)+1 = 128257)
+  injection_point: 3        # output of layer 3 = block-1 GLOBAL
+  canonical_compression: true   # annex A1.2 [FLEXIBLE, default ON]
+  canon_path: train/src/engram/assets/canon_llama31_v1.npy
+  canon_sha256: "03833370b174f9509c22565e4a7d03fc497305b602e85f61f30fc5036e074454"
+                          # pinned from the 2026-08-31 build (|V'|=101,747)
+  lr_mult: 5.0              # annex A1.7 (DeepSeek App. A): rows LR x5, WD 0;
+                          # v1.1 cadence: one sparse step per dense-equivalent step

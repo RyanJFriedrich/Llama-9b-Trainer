@@ -1,0 +1,41 @@
+{
+  "vocab_size": 128256,
+  "hidden_size": 4096,
+  "num_hidden_layers": 33,
+  "layer_types": ["swa","swa","swa","global","swa","swa","swa","global",
+                  "swa","swa","swa","global","swa","swa","swa","global",
+                  "swa","swa","swa","global","swa","swa","swa","global",
+                  "swa","swa","swa","global","swa","swa","swa","global","gather"],
+  "num_attention_heads": 32,
+  "num_key_value_heads": 8,
+  "head_dim": 128,
+  "intermediate_size": 14336,
+  "rms_norm_eps": 1e-05,
+  "tie_word_embeddings": false,
+  "swa": {"window": 4096, "rope_theta": 10000.0,
+          "sink": {"type": "learned_logit", "init": -10.0}},
+  "global": {"rope_type": "prope", "rope_fraction": 0.25, "rope_theta": 1000000.0,
+             "qk_norm": false},
+  "gather": {"rope_type": "prope", "rope_fraction": 0.25, "rope_theta": 1000000.0,
+             "qk_norm": false, "init": "identity_from_layer_31", "position": 32},
+  "attn_res": {
+    "enabled": true,
+    "scope": "all_layers",
+    "sources": "embedding_plus_block_delta_sums_plus_partial",
+    "keys": "rmsnorm", "values": "raw",
+    "pseudo_query_init": "zeros",
+    "gate": false
+  },
+  "engram": {
+    "enabled": false,
+    "orders": [1, 2, 3],
+    "heads_per_order": 2,
+    "row_dim": 256,
+    "rows_per_head": {"2": [1048573, 1048571], "3": [1048559, 1048549]},
+    "injection_point": 3,
+    "canonical_compression": true,
+    "canon_path": "train/src/engram/assets/canon_llama31_v1.npy",
+    "canon_sha256": "03833370b174f9509c22565e4a7d03fc497305b602e85f61f30fc5036e074454",
+    "lr_mult": 5.0
+  }
+}

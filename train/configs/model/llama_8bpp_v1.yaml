@@ -1,0 +1,109 @@
+# Llama-9B default model config — spec v2.0 §3.1 reference skeleton.
+# This is the canonical default build (33 layers, ~8.25B body params). Every
+# ablation arm is a diff against this file, never a code branch.
+# Tags: [LOCKED] values must not change without owner sign-off.
+# Filename kept from the v1.x era for repo compatibility; the project is no
+# longer a refit (spec v2.0 premise).
+
+vocab_size: 128256          # [LOCKED] Llama 3.1 BPE, unmodified (spec §2)
+hidden_size: 4096           # [LOCKED] donor geometry (spec §3.1)
+num_hidden_layers: 33       # [LOCKED] 8x [SWA,SWA,SWA,GLOBAL] + gather (spec §3.1)
+layer_types:
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - swa
+  - swa
+  - swa
+  - global
+  - gather
+num_attention_heads: 32     # [LOCKED] GQA 32 Q / 8 KV
+num_key_value_heads: 8
+head_dim: 128
+intermediate_size: 14336    # [LOCKED] SwiGLU
+rms_norm_eps: 1.0e-05
+tie_word_embeddings: false  # [LOCKED] untied (spec §2)
+
+swa:
+  window: 4096              # [LOCKED] final window (spec §3.2); offsets <= 4095 (I7)
+  rope_theta: 10000.0       # [LOCKED] bare theta (spec §3.2: window-capped offsets
+                          # make aliasing structurally impossible; do not "round up")
+  # [FLEXIBLE] ablation tooling (spec §7.2), default unset = final topology
+  # from step 0. Theta anneal interpolates donor 500k(llama3) -> 10k bare in
+  # log-inv_freq space:
+  # rope_theta_warmstart_anneal:
+  #   from: 500000.0
+  #   schedule: log_linear
+  # Window anneal: full sequence length -> 4096, linear-in-steps:
+  # window_anneal:
+  #   from: full
+  #   schedule: linear
+  sink:
+    type: learned_logit     # [LOCKED] per-head sink logit, no KV footprint
+    init: -10.0             # [LOCKED] near-no-op at init (invariant I4)
+
+global:
+  rope_type: prope          # [LOCKED] partial RoPE (spec §3.3); NoPE retired v2.0
+  rope_fraction: 0.25       # [LOCKED] rotate the first 32 dims (16 pairs) only
+  rope_theta: 1000000.0     # [LOCKED] bare theta
+  qk_norm: false            # [LOCKED] no QK-norm anywhere (spec §3.2)
+
+gather:
+  rope_type: prope          # [LOCKED] same positional family as the globals
+  rope_fraction: 0.25
+  rope_theta: 1000000.0
+  qk_norm: false            # [LOCKED]
+  init: identity_from_layer_31  # [LOCKED] zeroed o_proj/down_proj (exact no-op at init)
+  position: 32              # [EXPERIMENTAL] gather_position: 30 ablation, default last
+
+attn_res:
+  enabled: true             # [EXPERIMENTAL] flag, default ON (spec §3.5)
+  scope: all_layers         # [FLEXIBLE] all_layers (66 points) | globals_only (9)
+  sources: embedding_plus_block_delta_sums_plus_partial  # [LOCKED] never stream snapshots
+  keys: rmsnorm             # [LOCKED] keys-only norm
+  values: raw               # [LOCKED] never normalize values into the sum
+  pseudo_query_init: zeros  # [LOCKED] uniform softmax at init -> exact PreNorm input (I3)
+  gate: false               # [EXPERIMENTAL] scalar gate per application point, default OFF
+
+engram:
+  enabled: false            # [LOCKED component] spec §3.6 + annex A1 — enable
+                          # per run config. Rows host-RAM resident (~2.2 GB
+                          # bf16 + ~2.4 GB host 8-bit optimizer state).
+  orders: [1, 2, 3]
+  heads_per_order: 2
+  row_dim: 256
+  rows_per_head: { 2: [1048573, 1048571], 3: [1048559, 1048549] }
+                          # annex A1.4: distinct primes per (order, head);
+                          # order 1 derived from the canon artifact (annex
+                          # v1.1: smallest prime >= max(canonical_id)+1 = 128257)
+  injection_point: 3        # output of layer 3 = block-1 GLOBAL
+  canonical_compression: true   # annex A1.2 [FLEXIBLE, default ON]
+  canon_path: train/src/engram/assets/canon_llama31_v1.npy
+  canon_sha256: "03833370b174f9509c22565e4a7d03fc497305b602e85f61f30fc5036e074454"
+                          # pinned from the 2026-08-31 build (|V'|=101,747)
+  lr_mult: 5.0              # annex A1.7 (DeepSeek App. A): rows LR x5, WD 0

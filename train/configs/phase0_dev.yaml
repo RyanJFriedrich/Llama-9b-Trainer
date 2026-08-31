@@ -1,0 +1,32 @@
+# Dev-scale run config — for local smoke runs and tests on the RTX 4090.
+# Spec v2.0: runs start at FINAL topology (no anneals here; the window/theta
+# anneal knobs exist as ablation tooling, spec §7.2). Budgets are advisory
+# (spec §0.1): interrupt/extend via --max_steps at checkpoint boundaries,
+# never edit this config mid-flight.
+model: train/configs/model/dev_tiny.yaml
+data_shards: []            # fill in (tests write their own synthetic shards)
+seq_len: 64
+shuffle: true
+data_seed: 0
+
+steps: 200
+batch_size: 2
+grad_accum: 1
+lr: 0.001
+min_lr_ratio: 0.1
+warmup_steps: 20
+weight_decay: 0.1
+grad_clip: 1.0
+
+alpha: 1.0                 # run default; per-slice alpha comes from sidecars (spec §6.2)
+temperature: 1.0
+loss_chunk_size: 64
+
+bf16: false                # 4090 smoke: fp32 at toy scale; bf16 on deploy box
+grad_checkpointing: false
+seed: 0
+init: scratch              # dev smoke has no tiny donor checkpoint to load
+
+out_dir: train/runs/phase0_dev
+checkpoint_every: 100
+log_every: 10

@@ -1,0 +1,150 @@
+{
+  "index": 0,
+  "content": "",
+  "tokens": [],
+  "id_slot": 0,
+  "stop": true,
+  "model": "J:\\Kimi\\projects\\Llama-3-Rebuild\\QuantizedModel\\meta-llama-3.1-8b-instruct.Q8_0.gguf",
+  "tokens_predicted": 1,
+  "tokens_evaluated": 11,
+  "generation_settings": {
+    "seed": 4294967295,
+    "temperature": 0.800000011920929,
+    "dynatemp_range": 0.0,
+    "dynatemp_exponent": 1.0,
+    "top_k": 40,
+    "top_p": 0.949999988079071,
+    "min_p": 0.05000000074505806,
+    "top_n_sigma": -1.0,
+    "xtc_probability": 0.0,
+    "xtc_threshold": 0.10000000149011612,
+    "typical_p": 1.0,
+    "repeat_last_n": 64,
+    "repeat_penalty": 1.0,
+    "presence_penalty": 0.0,
+    "frequency_penalty": 0.0,
+    "dry_multiplier": 0.0,
+    "dry_base": 1.75,
+    "dry_allowed_length": 2,
+    "dry_penalty_last_n": 64,
+    "dry_sequence_breakers": [
+      "\n",
+      ":",
+      "\"",
+      "*"
+    ],
+    "mirostat": 0,
+    "mirostat_tau": 5.0,
+    "mirostat_eta": 0.10000000149011612,
+    "adaptive_target": -1.0,
+    "adaptive_decay": 0.8999999761581421,
+    "stop": [],
+    "max_tokens": 0,
+    "n_predict": 0,
+    "n_keep": 0,
+    "n_discard": 0,
+    "ignore_eos": false,
+    "stream": false,
+    "logit_bias": [],
+    "n_probs": 5,
+    "min_keep": 0,
+    "grammar": "",
+    "grammar_lazy": false,
+    "grammar_triggers": [],
+    "preserved_tokens": [],
+    "chat_format": "Content-only",
+    "reasoning_format": "deepseek",
+    "reasoning_in_content": false,
+    "generation_prompt": "",
+    "samplers": [
+      "penalties",
+      "dry",
+      "top_n_sigma",
+      "top_k",
+      "typ_p",
+      "top_p",
+      "min_p",
+      "xtc",
+      "temperature"
+    ],
+    "speculative.types": "none",
+    "timings_per_token": false,
+    "post_sampling_probs": false,
+    "backend_sampling": false,
+    "lora": []
+  },
+  "prompt": "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nWhat is theince?<|eot_id|>",
+  "has_new_line": false,
+  "truncated": false,
+  "stop_type": "limit",
+  "stopping_word": "",
+  "tokens_cached": 11,
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 11,
+    "prompt_ms": 309.849,
+    "prompt_per_token_ms": 28.168090909090907,
+    "prompt_per_second": 35.50116346994827,
+    "predicted_n": 1,
+    "predicted_ms": 0.001,
+    "predicted_per_token_ms": 0.0,
+    "predicted_per_second": 0.0
+  },
+  "completion_probabilities": [
+    {
+      "id": 128006,
+      "token": "",
+      "bytes": [],
+      "logprob": 0.0,
+      "top_logprobs": [
+        {
+          "id": 128006,
+          "token": "",
+          "bytes": [],
+          "logprob": 0.0
+        },
+        {
+          "id": 128007,
+          "token": "",
+          "bytes": [],
+          "logprob": -17.792091369628906
+        },
+        {
+          "id": 78191,
+          "token": "assistant",
+          "bytes": [
+            97,
+            115,
+            115,
+            105,
+            115,
+            116,
+            97,
+            110,
+            116
+          ],
+          "logprob": -21.006790161132812
+        },
+        {
+          "id": 128009,
+          "token": "",
+          "bytes": [],
+          "logprob": -21.045881271362305
+        },
+        {
+          "id": 119927,
+          "token": "\ud1a0\ud1a0",
+          "bytes": [
+            237,
+            134,
+            160,
+            237,
+            134,
+            160
+          ],
+          "logprob": -23.072601318359375
+        }
+      ]
+    }
+  ]
+}
