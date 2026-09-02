@@ -582,6 +582,10 @@ class TrainConfig:
     lr: float = 2e-4
     min_lr_ratio: float = 0.1
     warmup_steps: int = 100
+    # Cosine decay span in steps; None = the whole run. Set shorter (e.g. one
+    # epoch) for "anneal then steady-state": after cosine_steps the LR holds
+    # flat at min_lr_ratio * lr (owner preference 2026-09).
+    cosine_steps: Optional[int] = None
     weight_decay: float = 0.1
     grad_clip: float = 1.0
     beta1: float = 0.9
@@ -628,7 +632,7 @@ class TrainConfig:
             {
                 "model", "data_shards", "seq_len", "shuffle", "data_seed",
                 "steps", "batch_size", "grad_accum", "lr", "min_lr_ratio",
-                "warmup_steps", "weight_decay", "grad_clip", "beta1", "beta2",
+                "warmup_steps", "cosine_steps", "weight_decay", "grad_clip", "beta1", "beta2",
                 "alpha", "temperature", "loss_chunk_size", "bf16", "precision",
                 "torch_compile", "optimizer",
                 "grad_checkpointing", "seed", "init", "donor_path", "prebuilt_path",
@@ -649,6 +653,7 @@ class TrainConfig:
             lr=d.get("lr", 2e-4),
             min_lr_ratio=d.get("min_lr_ratio", 0.1),
             warmup_steps=d.get("warmup_steps", 100),
+            cosine_steps=d.get("cosine_steps"),
             weight_decay=d.get("weight_decay", 0.1),
             grad_clip=d.get("grad_clip", 1.0),
             beta1=d.get("beta1", 0.9),
@@ -682,6 +687,8 @@ class TrainConfig:
             raise ValueError("steps/batch_size/grad_accum must be positive")
         if self.lr <= 0 or self.warmup_steps < 0 or self.warmup_steps >= self.steps:
             raise ValueError("need lr > 0 and 0 <= warmup_steps < steps")
+        if self.cosine_steps is not None and not (self.warmup_steps < self.cosine_steps <= self.steps):
+            raise ValueError("cosine_steps must be in (warmup_steps, steps]")
         if not (0.0 <= self.alpha <= 1.0):
             raise ValueError("alpha must be in [0, 1]")
         if not (1.0 <= self.temperature <= 4.0):
@@ -708,6 +715,7 @@ class TrainConfig:
             "lr": self.lr,
             "min_lr_ratio": self.min_lr_ratio,
             "warmup_steps": self.warmup_steps,
+            "cosine_steps": self.cosine_steps,
             "weight_decay": self.weight_decay,
             "grad_clip": self.grad_clip,
             "beta1": self.beta1,

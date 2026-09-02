@@ -44,10 +44,13 @@ def code_hash() -> str:
 
 
 def lr_at(step: int, cfg: TrainConfig) -> float:
-    """Linear warmup -> cosine decay to min_lr_ratio * lr."""
+    """Linear warmup -> cosine decay to min_lr_ratio * lr over cosine_steps
+    (default: the whole run), then flat at the floor — the owner-preferred
+    "anneal epoch 1, steady state after" shape when cosine_steps is set."""
     if step < cfg.warmup_steps:
         return cfg.lr * (step + 1) / cfg.warmup_steps
-    p = (step - cfg.warmup_steps) / max(1, cfg.steps - cfg.warmup_steps)
+    span = cfg.cosine_steps or cfg.steps
+    p = (step - cfg.warmup_steps) / max(1, span - cfg.warmup_steps)
     cos = 0.5 * (1.0 + torch.cos(torch.tensor(torch.pi * min(p, 1.0)))).item()
     return cfg.lr * (cfg.min_lr_ratio + (1.0 - cfg.min_lr_ratio) * cos)
 

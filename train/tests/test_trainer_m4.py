@@ -37,6 +37,27 @@ def test_final_state_when_no_schedule():
     assert theta_progress_at(500, None) == 1.0
 
 
+def test_cosine_steps_then_steady_state():
+    """cosine_steps < steps: warmup + cosine over the span, then flat at the
+    min_lr_ratio floor for the rest of the run (owner pref 2026-09: anneal
+    epoch 1, steady state after)."""
+    d = {
+        "model": DEV_TINY, "data_shards": ["x"], "seq_len": 64,
+        "steps": 1000, "batch_size": 1, "lr": 2e-4, "warmup_steps": 10,
+        "min_lr_ratio": 0.1, "cosine_steps": 100,
+    }
+    cfg = TrainConfig.from_dict(d)
+    floor = cfg.lr * cfg.min_lr_ratio
+    assert abs(lr_at(100, cfg) - floor) < 1e-12           # end of cosine span
+    assert lr_at(500, cfg) == lr_at(1000, cfg) == lr_at(100, cfg)  # then flat
+    mid = lr_at(55, cfg)
+    assert floor < mid < cfg.lr                            # mid-span decays
+    # Default (no cosine_steps) is unchanged: cosine spans the whole run.
+    cfg2 = TrainConfig.from_dict({k: v for k, v in d.items() if k != "cosine_steps"})
+    assert lr_at(1000, cfg2) == pytest.approx(floor, abs=1e-12)
+    assert lr_at(500, cfg2) > floor + 1e-6
+
+
 def test_anneal_driver_applies_to_model():
     cfg = load_config(DEV_TINY)
     model = RefitModel(cfg)
