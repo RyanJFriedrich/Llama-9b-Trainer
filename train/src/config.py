@@ -594,12 +594,22 @@ class TrainConfig:
     loss_chunk_size: int = 512
 
     bf16: bool = True  # bf16 compute / fp32 masters
+    # spec §4: GEMM precision for attention/FFN only. "fp8" swaps those
+    # Linears to FP8 GEMMs (fp8.py); embeddings/lm_head/norms/AttnRes/loss
+    # stay bf16/fp32; FP8 weight storage remains rejected.
+    precision: str = "bf16"  # "bf16" | "fp8"
+    # Perf knob (never an architecture branch): compile the training forward
+    # with dynamic=False — batches are a fixed [B, seq_len], so one static
+    # graph per run. The raw module is kept for state_dict/checkpoints.
+    torch_compile: bool = False
     optimizer: str = "adamw8bit"  # "adamw8bit" (spec §5.1 default) | "adamw" (fp32 states, dev fallback)
     grad_checkpointing: bool = False
     seed: int = 0
 
     init: str = "warm"  # "warm" (donor furniture init, spec §3.4) | "scratch" (ablation)
+                        # | "prebuilt" (base checkpoint export, tools/base_ckpt.py)
     donor_path: str = "OriginalModel"
+    prebuilt_path: str = "exports/llama-9b-base-v1"  # used when init == "prebuilt"
 
     # Anneal knobs (spec §7.2 ablation tooling); absent = final topology for
     # the whole run.
@@ -619,8 +629,9 @@ class TrainConfig:
                 "model", "data_shards", "seq_len", "shuffle", "data_seed",
                 "steps", "batch_size", "grad_accum", "lr", "min_lr_ratio",
                 "warmup_steps", "weight_decay", "grad_clip", "beta1", "beta2",
-                "alpha", "temperature", "loss_chunk_size", "bf16", "optimizer",
-                "grad_checkpointing", "seed", "init", "donor_path",
+                "alpha", "temperature", "loss_chunk_size", "bf16", "precision",
+                "torch_compile", "optimizer",
+                "grad_checkpointing", "seed", "init", "donor_path", "prebuilt_path",
                 "anneal_window", "anneal_theta",
                 "out_dir", "checkpoint_every", "log_every", "log_filename",
             },
@@ -646,15 +657,18 @@ class TrainConfig:
             temperature=d.get("temperature", 1.0),
             loss_chunk_size=d.get("loss_chunk_size", 512),
             bf16=d.get("bf16", True),
+            precision=d.get("precision", "bf16"),
+            torch_compile=d.get("torch_compile", False),
             optimizer=d.get("optimizer", "adamw8bit"),
             grad_checkpointing=d.get("grad_checkpointing", False),
             seed=d.get("seed", 0),
             init=d.get("init", "warm"),
             donor_path=d.get("donor_path", "OriginalModel"),
+            prebuilt_path=d.get("prebuilt_path", "exports/llama-9b-base-v1"),
             anneal_window=KnobSchedule.from_dict(d["anneal_window"], "anneal_window")
-            if "anneal_window" in d else None,
+            if d.get("anneal_window") is not None else None,
             anneal_theta=KnobSchedule.from_dict(d["anneal_theta"], "anneal_theta")
-            if "anneal_theta" in d else None,
+            if d.get("anneal_theta") is not None else None,
             out_dir=d.get("out_dir", "train/runs/phase0"),
             checkpoint_every=d.get("checkpoint_every", 500),
             log_every=d.get("log_every", 10),
@@ -674,8 +688,10 @@ class TrainConfig:
             raise ValueError("temperature out of sane range (spec: 1-2)")
         if self.optimizer not in ("adamw", "adamw8bit"):
             raise ValueError("optimizer must be 'adamw' or 'adamw8bit'")
-        if self.init not in ("warm", "scratch"):
-            raise ValueError("init must be 'warm' or 'scratch'")
+        if self.precision not in ("bf16", "fp8"):
+            raise ValueError("precision must be 'bf16' or 'fp8' (spec §4)")
+        if self.init not in ("warm", "scratch", "prebuilt"):
+            raise ValueError("init must be 'warm', 'scratch', or 'prebuilt'")
         if self.seq_len < 2:
             raise ValueError("seq_len must be >= 2")
 
@@ -700,11 +716,14 @@ class TrainConfig:
             "temperature": self.temperature,
             "loss_chunk_size": self.loss_chunk_size,
             "bf16": self.bf16,
+            "precision": self.precision,
+            "torch_compile": self.torch_compile,
             "optimizer": self.optimizer,
             "grad_checkpointing": self.grad_checkpointing,
             "seed": self.seed,
             "init": self.init,
             "donor_path": self.donor_path,
+            "prebuilt_path": self.prebuilt_path,
             "anneal_window": self.anneal_window.to_dict() if self.anneal_window else None,
             "anneal_theta": self.anneal_theta.to_dict() if self.anneal_theta else None,
             "out_dir": self.out_dir,

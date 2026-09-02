@@ -23,6 +23,9 @@ temperature: 1.0
 loss_chunk_size: 512
 
 bf16: true                 # the reference numerics path
+# torch_compile: true      # optional perf knob (static 8k shape, one graph);
+                           # keep OFF for the smokes (one variable at a time),
+                           # flip for the real run after the FP8 overlay passes
 optimizer: adamw8bit       # spec §5.1 locked default (fp32 AdamW does not fit 96 GB)
 grad_checkpointing: true   # per-sublayer (spec §4 activation budget)
 seed: 0

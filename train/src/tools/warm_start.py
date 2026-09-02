@@ -22,7 +22,9 @@ from train.src.tools.load_donor import load_donor_state_dict
 from train.utils.log import log
 
 # Parameter name fragments that are legitimately new in the refit (not donor).
-NEW_PARAM_FRAGMENTS = ("sink_logit", "attn_res")
+# engram.: the §3.6 sidecar readout (zero-init U, unit gates/norms) — LOCKED
+# start values by construction; the tables are host-side, not in state_dict.
+NEW_PARAM_FRAGMENTS = ("sink_logit", "attn_res", "engram.")
 
 
 def warm_start_state_dict(refit: RefitModel, donor_state: dict[str, torch.Tensor]) -> dict:

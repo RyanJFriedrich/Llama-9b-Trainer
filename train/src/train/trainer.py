@@ -74,6 +74,24 @@ class Trainer:
         # report. See scripts/train_phase0.py.
         self.model.to(self.device)  # fp32 masters; bf16 via autocast
         self.model.grad_checkpointing = cfg.grad_checkpointing
+        if cfg.precision == "fp8":
+            # spec §4: attention/FFN GEMMs only; weight Parameter objects are
+            # shared, so optimizer groups / state dicts / warm start are all
+            # unaffected by the swap.
+            from train.src.train.fp8 import apply_fp8
+            apply_fp8(self.model)
+
+        # Optional torch.compile (perf knob, config-driven): compile a
+        # FORWARD CALLABLE used by the training loop only — self.model stays
+        # the raw module, so state_dict/checkpoint/warm-start formats are
+        # untouched and eval/probe paths stay eager (no recompiles from their
+        # different shapes). dynamic=False: training batches are a fixed
+        # [B, seq_len], so each run builds one static graph. (Anneal ablation
+        # runs mutate attn.window between steps → recompiles; not a target
+        # combo.)
+        self._fwd = (
+            torch.compile(self.model, dynamic=False) if cfg.torch_compile else self.model
+        )
 
         # Engram (spec §3.6, annex A1.7): device params split into two groups
         # — the per-order gate scalars get WD 0, everything else the run WD.
@@ -195,7 +213,7 @@ class Trainer:
                         idx, valid, self.device, requires_grad=True
                     )
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=(cfg.bf16 and self.device == "cuda")):
-                    hidden = self.model(tokens, return_hidden=True, engram=gb)
+                    hidden = self._fwd(tokens, return_hidden=True, engram=gb)
                 loss = kd_loss(
                     hidden.float(), self.model.lm_head.weight,
                     batch["topk_idx"], batch["topk_w"], batch["tail_w"], gold,

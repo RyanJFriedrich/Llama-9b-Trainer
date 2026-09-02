@@ -294,6 +294,19 @@ def test_warmstart_accounting():
     )
 
 
+def test_warmstart_accounting_with_engram_enabled():
+    """Engram readout params are legitimate new params at LOCKED start values
+    (zero U, unit gates/norms): warm start must whitelist them, not fail."""
+    _, refit, report = _warm_refit(engram={"enabled": True})
+    new = report["new_refit_params"]
+    assert any(k.startswith("engram.") for k in new)
+    for k in new:
+        assert ("sink_logit" in k) or ("attn_res" in k) or k.startswith("engram."), k
+    # Readout untouched by warm start: U still zero (I1), gates still 1.
+    assert all(int(p.abs().sum()) == 0 for p in refit.engram.proj.parameters())
+    assert all(float(p) == 1.0 for p in refit.engram.gates.parameters())
+
+
 def test_engram_enabled_builds_with_zero_injection():
     """The Engram module is landed: enabled=true builds host tables + device
     readout, and zero-init U (I1) makes the injection exactly zero at init —

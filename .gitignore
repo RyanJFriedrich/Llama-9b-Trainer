@@ -1,31 +1,18 @@
+# This repo tracks ONLY train/ (the harness). Everything else at the repo
+# root — docs/, data_pipeline/, OriginalModel/, QuantizedModel/,
+# LlamaCPPBinaries/, ReferenceCode/, exports/, AGENTS.md, logs — stays local
+# to each machine and moves via HF or direct transfer, never via git.
+/*
+!/train/
+!/.gitignore
+
+# Inside train/: no run outputs, data drop zones, or caches
+# (README placeholders stay tracked).
 __pycache__/
 *.pyc
-.pytest_cache/
-
-# Run artifacts and logs (README placeholders stay tracked)
 train/runs/*
 !train/runs/README.md
-*.log
-
-# Training data drop zones (bulk NPZ + converted spec shards) — large
 train/data/bulk_npz/*
 !train/data/bulk_npz/README.md
 train/data/shards/*
 !train/data/shards/README.md
-
-# Local pipeline configs with secrets
-data_pipeline/config.local.yaml
-data_pipeline/*.local.yaml
-
-# Data-pipeline production outputs — large, not committed
-data_pipeline/bulk_out/
-data_pipeline/bulk_smoke*/
-data_pipeline/raw_inspect/
-data_pipeline/*.dryrun/
-
-# Owner-delivered weights (D2/D6) — large, not committed
-weights/
-OriginalModel/
-QuantizedModel/
-LlamaCPPBinaries/
-ReferenceCode/

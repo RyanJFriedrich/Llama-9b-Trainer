@@ -26,6 +26,11 @@ def main() -> None:
         log(f"warm start: {report['donor_consumed']}/{report['donor_tensors']} donor "
             f"tensors, {len(report['new_refit_params'])} new params",
             filename=trainer.log_file, print_console=True)
+    elif cfg.init == "prebuilt":
+        from train.src.tools.base_ckpt import load_base_checkpoint
+        load_base_checkpoint(trainer.model, cfg.prebuilt_path)
+        log(f"prebuilt base checkpoint loaded: {cfg.prebuilt_path}",
+            filename=trainer.log_file, print_console=True)
     else:
         log("scratch init (ablation path — no donor warm start)",
             filename=trainer.log_file, print_console=True)

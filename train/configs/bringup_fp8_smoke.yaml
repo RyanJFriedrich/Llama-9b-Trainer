@@ -1,0 +1,39 @@
+# Bring-up FP8 overlay smoke (spec §4 bring-up protocol) — deploy box only.
+# Identical slice of data, seed, and schedule as bringup_bf16_smoke.yaml, with
+# the attention/FFN GEMMs switched to FP8 (precision: fp8). Overlay its loss
+# curve on the bf16 reference: the FP8 path is accepted if the curve tracks
+# the reference (no divergence, no material gap) and tokens/sec improves.
+# This becomes the STANDARD path for the real run once accepted.
+# Do not edit mid-flight; interrupt via --max_steps at a checkpoint boundary.
+model: train/configs/model/llama_9b_engram_v1.yaml
+data_shards: []            # SAME converted shard dirs as the bf16 reference
+seq_len: 8192
+shuffle: true
+data_seed: 0
+
+steps: 200                 # identical to the reference — curves must align
+batch_size: 1
+grad_accum: 4
+lr: 2.0e-4
+min_lr_ratio: 0.1
+warmup_steps: 20
+weight_decay: 0.1
+grad_clip: 1.0
+
+alpha: 1.0
+temperature: 1.0
+loss_chunk_size: 512
+
+bf16: true                 # autocast stays on; FP8 applies inside the GEMMs
+precision: fp8             # spec §4 compute path (attention + FFN GEMMs only)
+# torch_compile: true      # optional perf knob; keep OFF for the overlay
+                           # (one variable at a time), flip for the real run
+optimizer: adamw8bit
+grad_checkpointing: true
+seed: 0
+init: warm
+donor_path: OriginalModel
+
+out_dir: train/runs/bringup_fp8_smoke
+checkpoint_every: 100
+log_every: 5
