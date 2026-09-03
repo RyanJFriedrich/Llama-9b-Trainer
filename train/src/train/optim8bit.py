@@ -80,14 +80,17 @@ class AdamW8bit(Optimizer):
                 r = _dequantize(state["q_r"], state["s_r"], n)  # running sqrt(v)
                 m.mul_(beta1).add_(g, alpha=1 - beta1)
                 # v = beta2*v + (1-beta2)*g^2, stored as r = sqrt(v).
-                v = r.square().mul_(beta2).addcmul_(g, g, value=1 - beta2)
-                r = v.sqrt_()
+                # Everything below is in-place on m and r: the step's fp32
+                # working set is 2 buffers per param tensor (~4.2 GB for the
+                # 525M embed table) instead of ~7 (~14 GB) — that transient
+                # pushed the step peak to 92 GB on the 96 GB box.
+                r.square_().mul_(beta2).addcmul_(g, g, value=1 - beta2).sqrt_()
                 state["q_m"], state["s_m"] = _quantize(m)
                 state["q_r"], state["s_r"] = _quantize(r)
 
-                m_hat = m / (1 - beta1 ** t)
-                r_hat = r / math.sqrt(1 - beta2 ** t)
-                update = m_hat / (r_hat + eps)
+                m.div_(1 - beta1 ** t)                         # m_hat
+                r.div_(math.sqrt(1 - beta2 ** t)).add_(eps)    # r_hat + eps
+                update = m.div_(r)  # m_hat / (r_hat + eps)
                 pf = p.to(torch.float32).reshape(-1)
                 if wd != 0:
                     pf.mul_(1 - lr * wd)

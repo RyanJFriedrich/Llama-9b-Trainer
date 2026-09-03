@@ -621,10 +621,12 @@ class TrainConfig:
     # Diagnostics (box bring-up): append CUDA alloc/reserved/peak to each
     # log line; train_phase0 dumps a full memory summary on OOM regardless.
     mem_debug: bool = False
-    # bf16 autocast caches cast weights inside the autocast region; disabling
-    # recomputes the casts (identical numerics, extra cast kernels). Bring-up
-    # diagnostic knob — default preserves existing behavior.
-    autocast_cache: bool = True
+    # bf16 autocast caches cast weights inside the autocast region. OFF by
+    # default: the region is one micro-batch forward, each weight is used
+    # once, and the cache clears at region exit — so it buys nothing here
+    # and holds ~13 GB at 8.25B scale (box mem_diag, 2026-09-03). Numerics
+    # identical either way (same casts, recomputed vs cached).
+    autocast_cache: bool = False
     optimizer: str = "adamw8bit"  # "adamw8bit" (spec §5.1 default) | "adamw" (fp32 states, dev fallback)
     grad_checkpointing: bool = False
     seed: int = 0
@@ -684,7 +686,7 @@ class TrainConfig:
             precision=d.get("precision", "bf16"),
             torch_compile=d.get("torch_compile", False),
             mem_debug=d.get("mem_debug", False),
-            autocast_cache=d.get("autocast_cache", True),
+            autocast_cache=d.get("autocast_cache", False),
             optimizer=d.get("optimizer", "adamw8bit"),
             grad_checkpointing=d.get("grad_checkpointing", False),
             seed=d.get("seed", 0),
