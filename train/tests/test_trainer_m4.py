@@ -131,6 +131,84 @@ def test_smoke_loss_decreases(tmp_path):
     assert late < early * 0.98, f"loss did not decrease: {early:.4f} -> {late:.4f}"
 
 
+def test_freeze_embeddings(tmp_path):
+    """Owner decision 2026-09-03 (TrainConfig.freeze_embeddings, default ON):
+    embed_tokens + lm_head are frozen donor furniture — requires_grad False,
+    absent from the optimizer groups, no grads after a backward — while the
+    interior still trains. The False arm is the ablation escape hatch."""
+    shard = _learnable_shard(tmp_path, "s")
+    cfg_d = _train_cfg(tmp_path, [str(shard)], steps=6)
+    trainer = Trainer(TrainConfig.from_dict(cfg_d), device="cpu")
+    emb = trainer.model.model.embed_tokens.weight
+    head = trainer.model.lm_head.weight
+    assert not emb.requires_grad and not head.requires_grad
+    opt_params = {id(p) for g in trainer.optimizer.param_groups for p in g["params"]}
+    assert id(emb) not in opt_params and id(head) not in opt_params
+    trainer.train()
+    assert emb.grad is None and head.grad is None
+
+    cfg_off = {**cfg_d, "freeze_embeddings": False,
+               "out_dir": str(tmp_path / "run2"),
+               "log_filename": str(tmp_path / "run2.log")}
+    trainer2 = Trainer(TrainConfig.from_dict(cfg_off), device="cpu")
+    assert trainer2.model.model.embed_tokens.weight.requires_grad
+    assert trainer2.model.lm_head.weight.requires_grad
+
+
+def test_bf16_grad_accumulation(tmp_path):
+    """grad_dtype bf16 (owner decision 2026-09-03): autograd casts grads to
+    bf16 at the leaf and accumulates micro-batches in bf16 — the fp32 grad
+    set never exists. Frozen params get no grads; the smoke still learns at
+    grad_accum 2."""
+    shard = _learnable_shard(tmp_path, "s")
+    cfg_d = {**_train_cfg(tmp_path, [str(shard)], steps=8), "grad_accum": 2}
+    trainer = Trainer(TrainConfig.from_dict(cfg_d), device="cpu")
+    trainer.train()
+    emb = trainer.model.model.embed_tokens.weight
+    assert emb.grad is None  # frozen -> no grad at all
+    n_bf16 = 0
+    for p in trainer.model.parameters():
+        if not p.requires_grad:
+            continue
+        assert p.grad is not None and p.grad.dtype == torch.bfloat16
+        n_bf16 += 1
+    assert n_bf16 > 0
+    losses = []
+    for line in Path(cfg_d["log_filename"]).read_text().splitlines():
+        if "] step " in line:
+            losses.append(float(line.split("loss ")[1].split()[0]))
+    assert len(losses) >= 2 and losses[-1] < losses[0]
+
+    # bad values rejected
+    with pytest.raises(ValueError, match="grad_dtype"):
+        TrainConfig.from_dict({**cfg_d, "grad_dtype": "fp16"})
+
+
+def test_bf16_grads_track_fp32(tmp_path):
+    """Same seed, same shard, 4 steps: bf16-grad updates land within rounding
+    distance of the fp32-grad regime (and on both optimizer paths)."""
+    shard = _learnable_shard(tmp_path, "s")
+
+    def run(grad_dtype: str, optimizer: str) -> dict[str, torch.Tensor]:
+        cfg_d = {**_train_cfg(tmp_path, [str(shard)], steps=4),
+                 "grad_dtype": grad_dtype, "optimizer": optimizer,
+                 "out_dir": str(tmp_path / f"r_{grad_dtype}_{optimizer}"),
+                 "log_filename": str(tmp_path / f"r_{grad_dtype}_{optimizer}.log")}
+        trainer = Trainer(TrainConfig.from_dict(cfg_d), device="cpu")
+        trainer.train()
+        return {k: v for k, v in trainer.model.state_dict().items()}
+
+    ref = run("fp32", "adamw8bit")
+    for opt in ("adamw8bit", "adamw"):
+        got = run("bf16", opt)
+        for k, v in ref.items():
+            # bf16 grad rounding (~4e-3 relative) amplifies through the
+            # chaotic loss surface over steps: measured 2.9e-3 after 4 steps
+            # at lr 3e-3, with step-1 loss/gnorm bitwise-identical. 5e-3 is
+            # a regression net, not an equivalence claim.
+            assert torch.allclose(got[k], v, atol=5e-3), f"{k} diverged ({opt})"
+
+
 def test_checkpoint_resume_bitwise(tmp_path):
     """Resume-safe: same 15-step phase config; interrupt at 10 via max_steps,
     resume to 15 == uninterrupted 15 (anneal/LR schedules are functions of

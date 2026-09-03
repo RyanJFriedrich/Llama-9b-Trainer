@@ -18,6 +18,7 @@ masks doc boundaries and window tails.
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import time
 from pathlib import Path
@@ -96,17 +97,48 @@ class Trainer:
             torch.compile(self.model, dynamic=False) if cfg.torch_compile else self.model
         )
 
+        # Frozen donor furniture (owner decision 2026-09-03, TrainConfig
+        # freeze_embeddings): embed_tokens and lm_head keep the donor's fixed
+        # input/output representations — the new interior learns to bridge
+        # them. requires_grad=False keeps them out of the optimizer groups
+        # below AND skips their fp32 grads entirely (~4.2 GB at this scale).
+        if cfg.freeze_embeddings:
+            self.model.model.embed_tokens.weight.requires_grad_(False)
+            self.model.lm_head.weight.requires_grad_(False)
+            log("freeze_embeddings: embed_tokens + lm_head frozen "
+                "(requires_grad=False)", filename=self.log_file, print_console=True)
+
+        # bf16 gradients (owner decision 2026-09-03, TrainConfig grad_dtype):
+        # grad_dtype makes autograd cast each param's grad to bf16 as it
+        # lands at the leaf AND accumulate successive micro-batch grads in
+        # bf16 — so the fp32 gradient set (~27 GB post-freeze) never exists
+        # in memory. This is what reopens grad_accum > 1 on the 96 GB box
+        # (bring-up OOM #4). Precision argument on record: the 8-bit AdamW
+        # states quantize m/sqrt(v) to int8, so fp32's 24-bit grad mantissa
+        # is discarded by the very next op anyway.
+        # torch.optim.AdamW (dev fallback) rejects bf16 grads, so at step
+        # time its params get a transient fp32 copy (toy scale only).
+        self._grad_cast_fp32 = cfg.grad_dtype == "bf16" and cfg.optimizer != "adamw8bit"
+        if cfg.grad_dtype == "bf16":
+            n_bf16 = 0
+            for p in self.model.parameters():
+                if p.requires_grad:
+                    p.grad_dtype = torch.bfloat16
+                    n_bf16 += 1
+            log(f"grad_dtype: bf16 grads on {n_bf16} trainable params",
+                filename=self.log_file, print_console=True)
+
         # Engram (spec §3.6, annex A1.7): device params split into two groups
         # — the per-order gate scalars get WD 0, everything else the run WD.
         # The TABLES are not torch params at all: they are host-resident and
         # updated by a sparse row optimizer (LR x lr_mult, WD 0).
         self.engram_cfg = model_cfg.engram if model_cfg.engram.enabled else None
-        params: Any = self.model.parameters()
+        params: Any = [p for p in self.model.parameters() if p.requires_grad]
         if self.engram_cfg is not None:
             gate_params = list(self.model.engram.gates.parameters())
             gate_ids = {id(p) for p in gate_params}
             params = [
-                {"params": [p for p in self.model.parameters() if id(p) not in gate_ids],
+                {"params": [p for p in params if id(p) not in gate_ids],
                  "weight_decay": cfg.weight_decay},
                 {"params": gate_params, "weight_decay": 0.0},
             ]
@@ -153,6 +185,23 @@ class Trainer:
         tokens = batch["tokens"]
         gold = torch.cat([tokens[:, 1:], tokens[:, :1]], dim=1)  # shifted; last masked
         return tokens, gold
+
+    def _clip_grads(self, max_norm: float) -> float:
+        """Global-norm clip for the bf16-grad regime — same semantics as
+        clip_grad_norm_ (norm over ALL params, scale applied only when over)
+        but computed with a per-param fp32 transient, because a bf16
+        vector_norm accumulated over tens of millions of elements would
+        mis-measure the total."""
+        grads = [p.grad for p in self.model.parameters() if p.grad is not None]
+        total_sq = 0.0
+        for g in grads:
+            total_sq += g.float().pow(2).sum().item()
+        total = math.sqrt(total_sq)
+        if total > max_norm:
+            scale = max_norm / (total + 1e-6)
+            for g in grads:
+                g.mul_(scale)
+        return total
 
     def train(self, max_steps: Optional[int] = None) -> None:
         cfg = self.cfg
@@ -234,8 +283,29 @@ class Trainer:
                 loss_val += loss.item()
                 n_tokens += int(batch["loss_mask"].sum())
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
+            if self.cfg.grad_dtype == "bf16":
+                # bf16 grads: clip via an fp32-transient norm (a bf16
+                # vector_norm over 59M elements would mis-clip), then step.
+                # AdamW8bit casts each grad to fp32 per param as it reads it;
+                # torch.AdamW rejects bf16 grads, so the dev fallback gets a
+                # transient fp32 copy of the whole set (toy scale only).
+                grad_norm = self._clip_grads(cfg.grad_clip)
+                if self._grad_cast_fp32:
+                    for p in self.model.parameters():
+                        if p.grad is not None:
+                            g = p.grad.float()
+                            p.grad = None
+                            p.grad_dtype = torch.float32
+                            p.grad = g
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.grad_clip)
             self.optimizer.step()
+            if self._grad_cast_fp32:
+                # restore bf16 leaf-grad casting for the next backward
+                for p in self.model.parameters():
+                    if p.requires_grad:
+                        p.grad = None
+                        p.grad_dtype = torch.bfloat16
             if self.engram_cfg is not None:
                 self.row_optimizer.step(
                     lr=lr_at(self.step, cfg) * self.engram_cfg.lr_mult
@@ -244,6 +314,9 @@ class Trainer:
             batch_seqs = []
 
             if self.step % cfg.log_every == 0 or self.step == 1:
+                # TODO(known issue, owner 2026-09-03): tok/s is a cumulative
+                # average since train() start (t0/n_tokens never reset), not
+                # a per-log-interval rate — it lags the true recent tok/s.
                 tok_s = n_tokens / max(time.time() - t0, 1e-9)
                 eng = ""
                 if self.engram_cfg is not None:

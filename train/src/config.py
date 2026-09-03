@@ -636,6 +636,29 @@ class TrainConfig:
     donor_path: str = "OriginalModel"
     prebuilt_path: str = "exports/llama-9b-base-v1"  # used when init == "prebuilt"
 
+    # Owner decision (2026-09-03): embed_tokens and lm_head are FROZEN donor
+    # furniture — the new interior (SWA/global/gather + AttnRes + Engram) must
+    # learn to bridge the fixed Llama-3 input/output representations. They
+    # carry requires_grad=False: out of the optimizer entirely, no grads
+    # allocated (~4.2 GB fp32 saved at 128256x4096 x2, plus 8-bit states).
+    # EXPLICITLY TEMPORARY (spec §2): unfreeze only after the model has seen
+    # far more tokens and the interior has stabilized — flipping this to
+    # False early just pumps the cold interior's gradient noise into the
+    # donor's well-trained matrices.
+    freeze_embeddings: bool = True
+
+    # Owner decision (2026-09-03, shipped without an overlay arm): gradients
+    # accumulate in bf16. Rationale on record: the 8-bit AdamW states
+    # quantize m/sqrt(v) to int8, so fp32's 24-bit grad mantissa is discarded
+    # by the very next op anyway; Adam's scale-free m/sqrt(v) update is
+    # insensitive to bf16's ~0.4% relative error; and halving the resident
+    # gradient footprint is what reopens grad_accum > 1 on the 96 GB box
+    # (fp32 grads made accumulation structural-impossible — bring-up OOM #4).
+    # Implemented via torch's per-param grad_dtype: autograd casts each grad
+    # to bf16 as it lands at the leaf and accumulates micro-batches in bf16.
+    # "fp32" = old regime.
+    grad_dtype: str = "bf16"  # "bf16" | "fp32"
+
     # Anneal knobs (spec §7.2 ablation tooling); absent = final topology for
     # the whole run.
     anneal_window: Optional[KnobSchedule] = None
@@ -657,6 +680,7 @@ class TrainConfig:
                 "alpha", "temperature", "loss_chunk_size", "bf16", "precision",
                 "torch_compile", "mem_debug", "autocast_cache", "optimizer",
                 "grad_checkpointing", "seed", "init", "donor_path", "prebuilt_path",
+                "freeze_embeddings", "grad_dtype",
                 "anneal_window", "anneal_theta",
                 "out_dir", "checkpoint_every", "log_every", "log_filename",
             },
@@ -693,6 +717,8 @@ class TrainConfig:
             init=d.get("init", "warm"),
             donor_path=d.get("donor_path", "OriginalModel"),
             prebuilt_path=d.get("prebuilt_path", "exports/llama-9b-base-v1"),
+            freeze_embeddings=d.get("freeze_embeddings", True),
+            grad_dtype=d.get("grad_dtype", "bf16"),
             anneal_window=KnobSchedule.from_dict(d["anneal_window"], "anneal_window")
             if d.get("anneal_window") is not None else None,
             anneal_theta=KnobSchedule.from_dict(d["anneal_theta"], "anneal_theta")
@@ -720,6 +746,8 @@ class TrainConfig:
             raise ValueError("optimizer must be 'adamw' or 'adamw8bit'")
         if self.precision not in ("bf16", "fp8"):
             raise ValueError("precision must be 'bf16' or 'fp8' (spec §4)")
+        if self.grad_dtype not in ("bf16", "fp32"):
+            raise ValueError("grad_dtype must be 'bf16' or 'fp32'")
         if self.init not in ("warm", "scratch", "prebuilt"):
             raise ValueError("init must be 'warm', 'scratch', or 'prebuilt'")
         if self.seq_len < 2:
@@ -757,6 +785,8 @@ class TrainConfig:
             "init": self.init,
             "donor_path": self.donor_path,
             "prebuilt_path": self.prebuilt_path,
+            "freeze_embeddings": self.freeze_embeddings,
+            "grad_dtype": self.grad_dtype,
             "anneal_window": self.anneal_window.to_dict() if self.anneal_window else None,
             "anneal_theta": self.anneal_theta.to_dict() if self.anneal_theta else None,
             "out_dir": self.out_dir,
