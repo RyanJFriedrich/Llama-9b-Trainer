@@ -326,3 +326,31 @@ def test_engram_enabled_builds_with_zero_injection():
     )
     x = torch.randint(0, model.refit_config.vocab_size, (2, 16))
     assert torch.equal(model(x), base(x))
+
+
+def test_chunked_attention_matches_unchunked():
+    """attn_query_chunk splits the [H, T, S] score matrix over query blocks
+    without changing the math: chunked and unchunked dev_tiny models agree on
+    logits and on grads (CPU fp32). The backward pass exercises the per-chunk
+    gradient-checkpoint path (the memory fix that makes T=8192 fit the 96 GB
+    box)."""
+    d = load_config(DEV_TINY).to_dict()
+    torch.manual_seed(0)
+    m_full = RefitModel(ModelConfig.from_dict({**d, "attn_query_chunk": 0}))
+    torch.manual_seed(0)
+    m_chunk = RefitModel(ModelConfig.from_dict({**d, "attn_query_chunk": 16}))
+
+    ids = torch.randint(0, d["vocab_size"], (2, 64))
+    out_full = m_full(ids)
+    out_chunk = m_chunk(ids)
+    assert torch.allclose(out_full, out_chunk, atol=1e-4, rtol=1e-4), (
+        f"logits differ: {(out_full - out_chunk).abs().max()}"
+    )
+
+    m_full(ids).sum().backward()
+    m_chunk(ids).sum().backward()
+    p_chunk = dict(m_chunk.named_parameters())
+    for name, p in m_full.named_parameters():
+        if p.grad is None:
+            continue
+        assert torch.allclose(p.grad, p_chunk[name].grad, atol=1e-4, rtol=1e-3), name

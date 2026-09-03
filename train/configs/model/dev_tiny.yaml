@@ -24,6 +24,10 @@ head_dim: 32
 intermediate_size: 512
 rms_norm_eps: 1.0e-05
 tie_word_embeddings: false
+# Attention memory knob (harness, not spec): score matrix computed in query
+# blocks; identical math, bounds the fp32 softmax working set. Toy seq len
+# never reaches it; explicit for the round-trip tests.
+attn_query_chunk: 1024
 
 swa:
   window: 32                # toy-sized so offset-invariant tests are meaningful

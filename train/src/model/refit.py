@@ -95,9 +95,13 @@ class RefitAttention(nn.Module):
 
         self.rotary: Optional[nn.Module] = None  # RotaryEmbedding | PartialRotaryEmbedding
         self.sink_logit: Optional[nn.Parameter] = None
-        # Eval-time probe hook (spec §8 item 6): when set, called with the
-        # post-softmax attention probs [B, H, T, S]; must aggregate and
-        # discard (never retain the tensor). See eval/attn_probes.py.
+        # Query-block size for the score matrix (ModelConfig.attn_query_chunk;
+        # 0 = unchunked). Bounds the fp32 softmax working set at long T.
+        self.attn_query_chunk = cfg.attn_query_chunk
+        # Eval-time probe hook (spec §8 item 6): when set, called per query
+        # chunk with the post-softmax attention probs [B, H, Tc, S]; must
+        # aggregate and discard (never retain the tensor). See
+        # eval/attn_probes.py.
         self.probe: Optional[Any] = None
 
         if layer_type == "swa":
@@ -153,12 +157,55 @@ class RefitAttention(nn.Module):
         k = repeat_kv(k, self.num_key_value_groups)
         v = repeat_kv(v, self.num_key_value_groups)
 
-        attn_weights = torch.matmul(q, k.transpose(2, 3)) * self.scaling
-        attn_weights = attn_weights + causal_mask
+        # Query-chunked attention (ModelConfig.attn_query_chunk). The math is
+        # unchanged — softmax denominators are per query row over ALL keys —
+        # but the [H, T, S] fp32 score/softmax working set is bounded to one
+        # chunk at a time. Under autograd each chunk's core runs inside its
+        # own gradient checkpoint, so backward also recomputes a single
+        # chunk's scores instead of holding a whole layer's worth (the 96 GB
+        # box OOM without this at T=8192).
+        chunk = self.attn_query_chunk
+        if not (0 < chunk < seq_len):
+            chunk = seq_len  # unchunked: one block, the original path
+        ckpt_chunks = (
+            chunk < seq_len and torch.is_grad_enabled() and hidden_states.requires_grad
+        )
+        outs = []
+        for s in range(0, seq_len, chunk):
+            e = min(s + chunk, seq_len)
+            qc = q[:, :, s:e]
+            mask_c = causal_mask[:, :, s:e, :]
+            if ckpt_chunks:
+                oc, probs = torch.utils.checkpoint.checkpoint(
+                    self._attend_core, qc, k, v, mask_c, use_reentrant=False
+                )
+            else:
+                oc, probs = self._attend_core(qc, k, v, mask_c)
+            outs.append(oc)
+            if self.probe is not None:
+                # Eval-time stats hook (spec §8 item 6): called per query
+                # chunk with post-softmax probs [B, H, Tc, S]; the hook must
+                # aggregate and discard (never retain the tensor).
+                self.probe(probs)
+        attn_output = torch.cat(outs, dim=2)
+        attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
+        return self.o_proj(attn_output)
+
+    def _attend_core(
+        self,
+        qc: torch.Tensor,  # [B, H, Tc, D] query block
+        k: torch.Tensor,   # [B, H, S, D]
+        v: torch.Tensor,   # [B, H, S, D]
+        mask_c: torch.Tensor,  # [1, 1, Tc, S] additive
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Scores -> (sink) softmax -> values for one query block.
+        Returns (output [B, H, Tc, D], probs [B, H, Tc, S])."""
+        attn_weights = torch.matmul(qc, k.transpose(2, 3)) * self.scaling
+        attn_weights = attn_weights + mask_c
 
         if self.sink_logit is None:
             # Match the M1 donor math exactly: fp32 softmax.
-            attn_probs = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
+            attn_probs = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(qc.dtype)
         else:
             # Softmax with a learned sink in the denominator, fp32, max-stable.
             w = attn_weights.to(torch.float32)
@@ -166,13 +213,9 @@ class RefitAttention(nn.Module):
             m = torch.maximum(w.amax(dim=-1, keepdim=True), sink)
             p = torch.exp(w - m)
             denom = p.sum(dim=-1, keepdim=True) + torch.exp(sink - m)
-            attn_probs = (p / denom).to(q.dtype)
+            attn_probs = (p / denom).to(qc.dtype)
 
-        attn_output = torch.matmul(attn_probs, v)
-        if self.probe is not None:
-            self.probe(attn_probs)  # eval-time stats hook; aggregate + discard
-        attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
-        return self.o_proj(attn_output)
+        return torch.matmul(attn_probs, v), attn_probs
 
 
 class RefitDecoderLayer(nn.Module):

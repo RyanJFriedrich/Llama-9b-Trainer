@@ -376,6 +376,13 @@ class ModelConfig:
     intermediate_size: int = 14336
     rms_norm_eps: float = 1e-05
     tie_word_embeddings: bool = False
+    # Attention memory knob: compute the [H, T, S] score matrix in query
+    # blocks of this many rows (0 = unchunked). Identical math — softmax
+    # denominators are per query row over all keys — but bounds the fp32
+    # score/softmax working set, which at T=8192 fp32 would otherwise be
+    # ~8.6 GB per live copy and OOM the 96 GB box alongside the 82 GB static
+    # training state (found at bring-up 2026-09-03).
+    attn_query_chunk: int = 1024
     swa: Optional[SWAConfig] = None
     global_: Optional[GlobalConfig] = None  # serialized as "global"
     gather: Optional[GatherConfig] = None
@@ -425,6 +432,8 @@ class ModelConfig:
             raise ValueError("head_dim * num_attention_heads must equal hidden_size")
         if self.swa.window <= 0:
             raise ValueError("swa.window must be positive")
+        if self.attn_query_chunk < 0:
+            raise ValueError("attn_query_chunk must be >= 0 (0 = unchunked)")
         if self.swa.sink.type not in VALID_SINK_TYPES:
             raise ValueError(f"swa.sink.type must be one of {VALID_SINK_TYPES}")
         if self.attn_res.scope not in VALID_ATTN_RES_SCOPES:
@@ -467,6 +476,7 @@ class ModelConfig:
                 "vocab_size", "hidden_size", "num_hidden_layers", "layer_types",
                 "num_attention_heads", "num_key_value_heads", "head_dim",
                 "intermediate_size", "rms_norm_eps", "tie_word_embeddings",
+                "attn_query_chunk",
                 "swa", "global", "gather", "attn_res", "engram",
             },
             "model",
@@ -482,6 +492,7 @@ class ModelConfig:
             intermediate_size=d.get("intermediate_size", 14336),
             rms_norm_eps=d.get("rms_norm_eps", 1e-05),
             tie_word_embeddings=d.get("tie_word_embeddings", False),
+            attn_query_chunk=d.get("attn_query_chunk", 1024),
             swa=SWAConfig.from_dict(d["swa"]) if "swa" in d else None,
             global_=GlobalConfig.from_dict(d["global"]) if "global" in d else None,
             gather=GatherConfig.from_dict(d["gather"]) if "gather" in d else None,
@@ -502,6 +513,7 @@ class ModelConfig:
             "intermediate_size": self.intermediate_size,
             "rms_norm_eps": self.rms_norm_eps,
             "tie_word_embeddings": self.tie_word_embeddings,
+            "attn_query_chunk": self.attn_query_chunk,
             "swa": self.swa.to_dict(),  # type: ignore[union-attr]
             "global": self.global_.to_dict(),  # type: ignore[union-attr]
             "gather": self.gather.to_dict(),  # type: ignore[union-attr]
