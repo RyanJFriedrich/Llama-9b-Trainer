@@ -618,6 +618,13 @@ class TrainConfig:
     # with dynamic=False — batches are a fixed [B, seq_len], so one static
     # graph per run. The raw module is kept for state_dict/checkpoints.
     torch_compile: bool = False
+    # Diagnostics (box bring-up): append CUDA alloc/reserved/peak to each
+    # log line; train_phase0 dumps a full memory summary on OOM regardless.
+    mem_debug: bool = False
+    # bf16 autocast caches cast weights inside the autocast region; disabling
+    # recomputes the casts (identical numerics, extra cast kernels). Bring-up
+    # diagnostic knob — default preserves existing behavior.
+    autocast_cache: bool = True
     optimizer: str = "adamw8bit"  # "adamw8bit" (spec §5.1 default) | "adamw" (fp32 states, dev fallback)
     grad_checkpointing: bool = False
     seed: int = 0
@@ -646,7 +653,7 @@ class TrainConfig:
                 "steps", "batch_size", "grad_accum", "lr", "min_lr_ratio",
                 "warmup_steps", "cosine_steps", "weight_decay", "grad_clip", "beta1", "beta2",
                 "alpha", "temperature", "loss_chunk_size", "bf16", "precision",
-                "torch_compile", "optimizer",
+                "torch_compile", "mem_debug", "autocast_cache", "optimizer",
                 "grad_checkpointing", "seed", "init", "donor_path", "prebuilt_path",
                 "anneal_window", "anneal_theta",
                 "out_dir", "checkpoint_every", "log_every", "log_filename",
@@ -676,6 +683,8 @@ class TrainConfig:
             bf16=d.get("bf16", True),
             precision=d.get("precision", "bf16"),
             torch_compile=d.get("torch_compile", False),
+            mem_debug=d.get("mem_debug", False),
+            autocast_cache=d.get("autocast_cache", True),
             optimizer=d.get("optimizer", "adamw8bit"),
             grad_checkpointing=d.get("grad_checkpointing", False),
             seed=d.get("seed", 0),
@@ -738,6 +747,8 @@ class TrainConfig:
             "bf16": self.bf16,
             "precision": self.precision,
             "torch_compile": self.torch_compile,
+            "mem_debug": self.mem_debug,
+            "autocast_cache": self.autocast_cache,
             "optimizer": self.optimizer,
             "grad_checkpointing": self.grad_checkpointing,
             "seed": self.seed,

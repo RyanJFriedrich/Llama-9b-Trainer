@@ -215,7 +215,9 @@ class Trainer:
                     gb = self.model.engram_tables.stage(
                         idx, valid, self.device, requires_grad=True
                     )
-                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=(cfg.bf16 and self.device == "cuda")):
+                with torch.autocast("cuda", dtype=torch.bfloat16,
+                                    enabled=(cfg.bf16 and self.device == "cuda"),
+                                    cache_enabled=cfg.autocast_cache):
                     hidden = self._fwd(tokens, return_hidden=True, engram=gb)
                 loss = kd_loss(
                     hidden.float(), self.model.lm_head.weight,
@@ -247,10 +249,15 @@ class Trainer:
                 if self.engram_cfg is not None:
                     tel = self.row_optimizer.pop_telemetry()
                     eng = f" eng_round {tel['engram_bf16_rounding_loss']:.3f}"
+                mem = ""
+                if cfg.mem_debug and self.device == "cuda":
+                    mem = (f" mem_alloc {torch.cuda.memory_allocated() / 2**30:.2f}GiB"
+                           f" reserved {torch.cuda.memory_reserved() / 2**30:.2f}GiB"
+                           f" peak {torch.cuda.max_memory_allocated() / 2**30:.2f}GiB")
                 log(f"step {self.step}/{steps} loss {loss_val:.4f} "
                     f"lr {lr_at(self.step - 1, cfg):.2e} gnorm {grad_norm:.3f} "
                     f"window {state['window']} "
-                    f"theta {state['theta_progress']:.3f} tok/s {tok_s:.0f}{eng}",
+                    f"theta {state['theta_progress']:.3f} tok/s {tok_s:.0f}{eng}{mem}",
                     filename=self.log_file, print_console=True)
 
             if self.step % cfg.checkpoint_every == 0 or self.step == steps:

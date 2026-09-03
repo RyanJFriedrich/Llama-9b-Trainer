@@ -6,6 +6,8 @@ Usage (from repo root):
 """
 import argparse
 
+import torch
+
 from train.src.config import load_train_config
 from train.src.train.trainer import Trainer
 from train.utils.log import log
@@ -38,7 +40,15 @@ def main() -> None:
     if args.resume:
         trainer.load_checkpoint(args.resume)
 
-    trainer.train()
+    try:
+        trainer.train()
+    except torch.OutOfMemoryError:
+        # Bring-up aid: dump the full CUDA memory breakdown before dying so the
+        # OOM can be attributed (static state vs activations vs fragmentation).
+        if torch.cuda.is_available():
+            log("OOM — torch.cuda.memory_summary():\n" + torch.cuda.memory_summary(),
+                filename=trainer.log_file, print_console=True)
+        raise
 
 
 if __name__ == "__main__":
