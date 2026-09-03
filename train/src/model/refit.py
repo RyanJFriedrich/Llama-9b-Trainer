@@ -406,33 +406,48 @@ class RefitModel(nn.Module):
                 return torch.utils.checkpoint.checkpoint(mod, sources, h, use_reentrant=False)
             return mod(sources, h)
 
+        # Checkpointed sublayer = RMSNorm + attn/MLP as one region. Defined
+        # with explicit args (NOT a loop-closure lambda — a lambda would bind
+        # the LAST iteration's modules at backward-recompute time and torch
+        # raises CheckpointError on the mismatched saves).
+        def _normed_sublayer(norm, sublayer, h_in, mask=None):
+            if mask is None:
+                return sublayer(norm(h_in))
+            return sublayer(norm(h_in), mask)
+
         for i, layer in enumerate(self.model.layers):
             attn = layer.self_attn
             mask = masks[(attn.layer_type, attn.window if attn.layer_type == "swa" else None)]
 
             # Gradient checkpointing (M4): recompute the attention/MLP
             # sublayers in backward instead of holding their activations.
-            # The AttnRes sources (blocks/partial) stay materialized — they
-            # are the spec'd O(Nd) bookkeeping, N <= 10.
+            # The checkpointed region includes the sublayer's input RMSNorm —
+            # its fp32 upcast intermediates (~0.3 GB at 8k) would otherwise be
+            # saved at all 66 application points (~20 GB; the #2 bring-up OOM
+            # after the AttnRes stack fix). The AttnRes sources
+            # (blocks/partial) stay materialized — they are the spec'd O(Nd)
+            # bookkeeping, N <= 10.
             ckpt = (
                 self.grad_checkpointing and self.training and h.requires_grad
             )
 
             x = apply_attn_res(i, "pre_attn", ckpt)
-            a_in = layer.input_layernorm(x)
             if ckpt:
-                d1 = torch.utils.checkpoint.checkpoint(attn, a_in, mask, use_reentrant=False)
+                d1 = torch.utils.checkpoint.checkpoint(
+                    _normed_sublayer, layer.input_layernorm, attn, x, mask,
+                    use_reentrant=False)
             else:
-                d1 = attn(a_in, mask)
+                d1 = attn(layer.input_layernorm(x), mask)
             h = h + d1
             partial = partial + d1
 
             x = apply_attn_res(i, "pre_mlp", ckpt)
-            m_in = layer.post_attention_layernorm(x)
             if ckpt:
-                d2 = torch.utils.checkpoint.checkpoint(layer.mlp, m_in, use_reentrant=False)
+                d2 = torch.utils.checkpoint.checkpoint(
+                    _normed_sublayer, layer.post_attention_layernorm, layer.mlp,
+                    x, use_reentrant=False)
             else:
-                d2 = layer.mlp(m_in)
+                d2 = layer.mlp(layer.post_attention_layernorm(x))
             h = h + d2
             partial = partial + d2
 
