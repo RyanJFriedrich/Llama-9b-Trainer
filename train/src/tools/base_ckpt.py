@@ -115,7 +115,11 @@ def load_base_checkpoint(model: RefitModel, path: str | Path) -> None:
     and, when Engram is enabled, the canon checksum before touching rows."""
     path = Path(path)
     exported = json.loads((path / "config.json").read_text(encoding="utf-8"))
-    if exported != model.refit_config.to_dict():
+    exp_copy = dict(exported)
+    cfg_copy = model.refit_config.to_dict()
+    exp_copy.pop("attn_query_chunk", None)
+    cfg_copy.pop("attn_query_chunk", None)
+    if exp_copy != cfg_copy:
         raise ValueError(
             f"base checkpoint config mismatch: {path}/config.json was built from "
             "a different model config — refusing to load"
