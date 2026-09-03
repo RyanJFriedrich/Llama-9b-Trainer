@@ -22,8 +22,8 @@ grad_accum: 4              # bf16 grad buffers make this fit; 32768 tok/step
 lr: 2.0e-4                 # unchanged from the accepted smoke — one variable
 min_lr_ratio: 0.1          # at a time
 warmup_steps: 20
-cosine_steps: 2547         # anneal over epoch 1, then steady state at the
-                           # 10% floor for epochs 2-5 (owner pref 2026-09)
+cosine_steps: 200         # anneal over 200 steps, then steady state at the
+                           # 200 steps found to work in testing.
 weight_decay: 0.1
 grad_clip: 1.0
 
@@ -42,8 +42,8 @@ init: prebuilt             # the HF base checkpoint round-trip
 prebuilt_path: exports/llama-9b-base-v1
 
 out_dir: train/runs/real_base_v1
-checkpoint_every: 2547     # one drop per epoch: 5 drops over the run, ~50 GB
+checkpoint_every: 100     # one drop per epoch: 5 drops over the run, ~50 GB
                            # each = ~250 GB. PRUNE after pulling a checkpoint
                            # down (keep the latest 1-2) — the trainer never
                            # deletes.
-log_every: 10
+log_every: 5
