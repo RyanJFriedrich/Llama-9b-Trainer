@@ -42,6 +42,12 @@ def main() -> None:
 
     try:
         trainer.train()
+    except KeyboardInterrupt:
+        log("\nKeyboardInterrupt caught — saving emergency checkpoint before exit...",
+            filename=trainer.log_file, print_console=True)
+        if trainer.step > 0:
+            trainer.save_checkpoint(name=f"ckpt_step{trainer.step}_interrupted.pt")
+        log("Clean shutdown complete.", filename=trainer.log_file, print_console=True)
     except torch.OutOfMemoryError:
         # Bring-up aid: dump the full CUDA memory breakdown before dying so the
         # OOM can be attributed (static state vs activations vs fragmentation).
