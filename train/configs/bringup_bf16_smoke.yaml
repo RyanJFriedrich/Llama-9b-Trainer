@@ -11,7 +11,10 @@ data_seed: 0
 
 steps: 200                 # advisory (spec §0.1); enough for a curve + tok/s
 batch_size: 1
-grad_accum: 4
+grad_accum: 1             # 4 does NOT fit the 96 GB box: micro-batch N+1's
+                          # forward runs with ~31 GiB of accumulated fp32 grads
+                          # resident (bring-up OOM #4, 2026-09-03) — 1 is the
+                          # only value that fits. Effective batch 8192 tok/step.
 lr: 2.0e-4
 min_lr_ratio: 0.1
 warmup_steps: 20

@@ -1,7 +1,9 @@
 # REAL RUN: base-v1 (owner plan 2026-09-02) — deploy box only.
 # Launch ONLY after the FP8 overlay smoke is accepted (runbook Part 4c).
 # 5 epochs over the current class-(a) corpus: 81 NPZ = 83.5M tokens
-# (manifest 2026-09-01) -> 2547 steps/epoch at 32768 tok/step -> 12735 steps.
+# (manifest 2026-09-01) -> 10188 steps/epoch at 8192 tok/step -> 50940 steps.
+# (grad_accum 1, not 4: accumulation does not fit the 96 GB box — resident
+# fp32 grads + forward working set, bring-up OOM #4 2026-09-03.)
 # The artifact is the inspectable "base v1": FP8 standard path + compiled
 # forward, donor furniture init via the prebuilt HF base checkpoint.
 # Do not edit mid-flight; interrupt via checkpoint boundaries. Data top-up
@@ -14,13 +16,13 @@ seq_len: 8192
 shuffle: true
 data_seed: 0
 
-steps: 12735               # 5 epochs over 83.5M tokens (advisory, spec §0.1)
+steps: 50940               # 5 epochs over 83.5M tokens (advisory, spec §0.1)
 batch_size: 1
-grad_accum: 4
+grad_accum: 1
 lr: 2.0e-4                 # unchanged from the accepted smoke — one variable
 min_lr_ratio: 0.1          # at a time
 warmup_steps: 20
-cosine_steps: 2547         # anneal over epoch 1, then steady state at the
+cosine_steps: 10188        # anneal over epoch 1, then steady state at the
                            # 10% floor for epochs 2-5 (owner pref 2026-09)
 weight_decay: 0.1
 grad_clip: 1.0
@@ -40,7 +42,8 @@ init: prebuilt             # the HF base checkpoint round-trip
 prebuilt_path: exports/llama-9b-base-v1
 
 out_dir: train/runs/real_base_v1
-checkpoint_every: 2500     # ~50 GB each: 5 drops over the run = ~250 GB.
-                           # PRUNE after pulling a checkpoint down (keep the
-                           # latest 1-2) — the trainer never deletes.
+checkpoint_every: 10188    # one drop per epoch: 5 drops over the run, ~50 GB
+                           # each = ~250 GB. PRUNE after pulling a checkpoint
+                           # down (keep the latest 1-2) — the trainer never
+                           # deletes.
 log_every: 10

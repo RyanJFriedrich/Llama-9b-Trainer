@@ -13,7 +13,9 @@ data_seed: 0
 
 steps: 200                 # identical to the reference — curves must align
 batch_size: 1
-grad_accum: 4
+grad_accum: 1             # must match the bf16 reference exactly — see its
+                          # comment: 4 OOMs the 96 GB box (resident grads +
+                          # forward working set); both smokes run at 1.
 lr: 2.0e-4
 min_lr_ratio: 0.1
 warmup_steps: 20
