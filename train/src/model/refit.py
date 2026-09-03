@@ -387,14 +387,24 @@ class RefitModel(nn.Module):
         blocks: list[torch.Tensor] = [h]  # blocks[0] = embedding output e
         partial = torch.zeros_like(h)     # current block's running partial b_n
 
-        def apply_attn_res(i: int, sub: str) -> torch.Tensor:
+        def apply_attn_res(i: int, sub: str, use_ckpt: bool) -> torch.Tensor:
             key = (i, sub)
             if key not in self.attn_res_map:
                 return h
             sources = blocks + [partial]
             if capture is not None:
                 capture["attn_res_sources"][key] = [s.detach().clone() for s in sources]
-            return self.model.attn_res[self.attn_res_map[key]](sources, h)
+            mod = self.model.attn_res[self.attn_res_map[key]]
+            if use_ckpt:
+                # BlockAttnRes stacks the sources ([N, B, T, D]) and autograd
+                # saves the stack AND its keys-norm per application — ~2N x
+                # 64 MB at 8k, growing with N; over 66 applications that is
+                # ~60 GB and OOMs the 96 GB box. The sources themselves stay
+                # materialized either way (the spec'd O(Nd) bookkeeping), so
+                # checkpoint the computation: recompute is a stack + norm +
+                # N-way softmax, and the inputs are already live.
+                return torch.utils.checkpoint.checkpoint(mod, sources, h, use_reentrant=False)
+            return mod(sources, h)
 
         for i, layer in enumerate(self.model.layers):
             attn = layer.self_attn
@@ -408,7 +418,7 @@ class RefitModel(nn.Module):
                 self.grad_checkpointing and self.training and h.requires_grad
             )
 
-            x = apply_attn_res(i, "pre_attn")
+            x = apply_attn_res(i, "pre_attn", ckpt)
             a_in = layer.input_layernorm(x)
             if ckpt:
                 d1 = torch.utils.checkpoint.checkpoint(attn, a_in, mask, use_reentrant=False)
@@ -417,7 +427,7 @@ class RefitModel(nn.Module):
             h = h + d1
             partial = partial + d1
 
-            x = apply_attn_res(i, "pre_mlp")
+            x = apply_attn_res(i, "pre_mlp", ckpt)
             m_in = layer.post_attention_layernorm(x)
             if ckpt:
                 d2 = torch.utils.checkpoint.checkpoint(layer.mlp, m_in, use_reentrant=False)
