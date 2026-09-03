@@ -51,7 +51,7 @@ def fp8_gemm_available() -> bool:
     try:
         a = torch.randn(16, 16, device="cuda").bfloat16()
         q, s = _quantize(a, E4M3, E4M3_MAX)
-        torch._scaled_mm(q, q.t(), scale_a=s, scale_b=s, out_dtype=torch.bfloat16)
+        torch._scaled_mm(q, q.t(), scale_a=s, scale_b=s, out_dtype=torch.bfloat16, use_fast_accum=True)
         _FP8_OK = True
     except Exception:
         _FP8_OK = False
@@ -90,7 +90,7 @@ class _FP8GEMM(torch.autograd.Function):
         if emulate:
             return _dequantize(xq, sx) @ _dequantize(wq, sw).t()
         return torch._scaled_mm(xq, wq.t(), scale_a=sx, scale_b=sw,
-                                out_dtype=torch.bfloat16)
+                                out_dtype=torch.bfloat16, use_fast_accum=True)
 
     @staticmethod
     def backward(ctx, g: torch.Tensor):
@@ -104,7 +104,7 @@ class _FP8GEMM(torch.autograd.Function):
             # dgrad: g[M,N] @ w[N,K] — mat2 must be column-major storage.
             w_cm = wq.t().contiguous().t()
             gx = torch._scaled_mm(gq, w_cm, scale_a=sg, scale_b=sw,
-                                  out_dtype=torch.bfloat16)
+                                  out_dtype=torch.bfloat16, use_fast_accum=True)
             # wgrad: g^T[N,M] @ x[M,K] — mat1 row-major, mat2 column-major.
             # cuBLASLt requires inner dims divisible by 16; M (token count)
             # is the only dim that can miss, so zero-pad it — zero rows
@@ -119,7 +119,7 @@ class _FP8GEMM(torch.autograd.Function):
             gt_rm = gq_m.t().contiguous()
             x_cm = xq_m.t().contiguous().t()
             gw = torch._scaled_mm(gt_rm, x_cm, scale_a=sg, scale_b=sx,
-                                  out_dtype=torch.bfloat16)
+                                  out_dtype=torch.bfloat16, use_fast_accum=True)
         return gx.to(ctx.x_dtype), gw.to(ctx.w_dtype)
 
 
