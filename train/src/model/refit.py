@@ -414,6 +414,9 @@ class RefitModel(nn.Module):
                 return sublayer(norm(h_in))
             return sublayer(norm(h_in), mask)
 
+        if self.grad_checkpointing and self.training and torch.is_grad_enabled():
+            h = h.requires_grad_(True)
+
         for i, layer in enumerate(self.model.layers):
             attn = layer.self_attn
             mask = masks[(attn.layer_type, attn.window if attn.layer_type == "swa" else None)]
@@ -427,7 +430,7 @@ class RefitModel(nn.Module):
             # (blocks/partial) stay materialized — they are the spec'd O(Nd)
             # bookkeeping, N <= 10.
             ckpt = (
-                self.grad_checkpointing and self.training and h.requires_grad
+                self.grad_checkpointing and self.training and torch.is_grad_enabled()
             )
 
             x = apply_attn_res(i, "pre_attn", ckpt)

@@ -382,7 +382,7 @@ class ModelConfig:
     # score/softmax working set, which at T=8192 fp32 would otherwise be
     # ~8.6 GB per live copy and OOM the 96 GB box alongside the 82 GB static
     # training state (found at bring-up 2026-09-03).
-    attn_query_chunk: int = 1024
+    attn_query_chunk: int = 512
     swa: Optional[SWAConfig] = None
     global_: Optional[GlobalConfig] = None  # serialized as "global"
     gather: Optional[GatherConfig] = None
@@ -492,7 +492,7 @@ class ModelConfig:
             intermediate_size=d.get("intermediate_size", 14336),
             rms_norm_eps=d.get("rms_norm_eps", 1e-05),
             tie_word_embeddings=d.get("tie_word_embeddings", False),
-            attn_query_chunk=d.get("attn_query_chunk", 1024),
+            attn_query_chunk=d.get("attn_query_chunk", 512),
             swa=SWAConfig.from_dict(d["swa"]) if "swa" in d else None,
             global_=GlobalConfig.from_dict(d["global"]) if "global" in d else None,
             gather=GatherConfig.from_dict(d["gather"]) if "gather" in d else None,

@@ -99,5 +99,5 @@
     "canon_sha256": "03833370b174f9509c22565e4a7d03fc497305b602e85f61f30fc5036e074454",
     "lr_mult": 5.0
   },
-  "attn_query_chunk": 1024
+  "attn_query_chunk": 512
 }

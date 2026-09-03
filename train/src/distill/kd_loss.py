@@ -88,9 +88,12 @@ class _FusedKDLoss(torch.autograd.Function):
         alpha, temperature, chunk_size = ctx.alpha, ctx.temperature, ctx.chunk_size
         N, D = hidden.shape
         V = weight.shape[0]
+        needs_w_grad = ctx.needs_input_grad[1]
 
         grad_h = torch.zeros_like(hidden)
-        grad_w = torch.zeros_like(weight, dtype=torch.float32)
+        grad_w = torch.zeros_like(weight, dtype=torch.float32) if needs_w_grad else None
+        scale = grad_out.to(torch.float32) / temperature
+
         for s in range(0, N, chunk_size):
             e = min(s + chunk_size, N)
             m = mask[s:e].to(torch.float32)
@@ -123,11 +126,13 @@ class _FusedKDLoss(torch.autograd.Function):
             else:
                 dz = alpha * dz
 
-            dz = (dz * m.unsqueeze(1)) * (grad_out.to(torch.float32) / temperature)
+            dz.mul_(m.unsqueeze(1)).mul_(scale)
             grad_h[s:e] = (dz @ weight.to(torch.float32)).to(hidden.dtype)
-            grad_w += dz.T @ h_c
+            if needs_w_grad:
+                grad_w += dz.T @ h_c
 
-        return grad_h, grad_w.to(weight.dtype), None, None, None, None, None, None, None, None
+        out_w_grad = grad_w.to(weight.dtype) if needs_w_grad else None
+        return grad_h, out_w_grad, None, None, None, None, None, None, None, None
 
 
 def kd_loss(
