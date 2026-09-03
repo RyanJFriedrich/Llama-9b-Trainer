@@ -49,10 +49,10 @@ intermediate_size: 14336    # [LOCKED] SwiGLU
 rms_norm_eps: 1.0e-05
 tie_word_embeddings: false  # [LOCKED] untied (spec §2)
 # Attention memory knob (harness, not spec): score matrix in query blocks of
-# 1024 — identical math (softmax denominators are per query row), bounds the
-# fp32 working set so T=8192 fits the 96 GB box next to the ~82 GB static
-# training state (bring-up OOM fix, 2026-09-03).
-attn_query_chunk: 1024
+# 512 — identical math (softmax denominators are per query row), bounds the
+# fp32 working set so T=8192 fits the 96 GB box next to optimizer states +
+# bf16 grads (bring-up OOM fixes, 2026-09-03).
+attn_query_chunk: 512
 
 swa:
   window: 4096              # [LOCKED] final window (spec §3.2); offsets <= 4095 (I7)

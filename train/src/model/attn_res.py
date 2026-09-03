@@ -47,11 +47,21 @@ class BlockAttnRes(nn.Module):
         # sources: N tensors [B, T, D] (embedding, completed block delta-sums,
         # current partial). At zero-init pseudo-query the softmax over the
         # source axis is exactly uniform.
-        V = torch.stack(sources, dim=0)  # [N, B, T, D]
-        K = self.key_norm(V)  # keys-only norm; values stay raw
-        logits = torch.einsum("d,n...d->n...", self.pseudo_query, K)  # [N, B, T]
+        # Looped, NOT stacked: stacking the N sources ([N, B, T, D] ~670 MB
+        # bf16 at 8k) + the fp32 key-norm upcast (~1.3 GB) + the weighted
+        # product is a ~3.4 GiB transient at EACH of 66 application points,
+        # which OOM'd the 96 GB box once optimizer states + bf16 grads were
+        # resident (bring-up OOM #5, 2026-09-03). Per-source looping keeps
+        # the transient at one source's norm (~0.2 GiB); same math, modulo
+        # bf16 accumulation order in the final sum.
+        logits = torch.stack([
+            torch.einsum("d,...d->...", self.pseudo_query, self.key_norm(v))
+            for v in sources
+        ], dim=0)  # [N, B, T]
         alpha = torch.softmax(logits, dim=0)
-        out = (alpha.unsqueeze(-1) * V).sum(dim=0)  # [B, T, D]
+        out = torch.zeros_like(sources[0])
+        for a, v in zip(alpha, sources):
+            out.add_(a.unsqueeze(-1) * v)  # values stay raw
         if self.gate is not None:
             if h_prenorm is None:
                 raise ValueError("gated AttnRes requires h_prenorm")

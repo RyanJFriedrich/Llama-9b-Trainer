@@ -396,13 +396,12 @@ class RefitModel(nn.Module):
                 capture["attn_res_sources"][key] = [s.detach().clone() for s in sources]
             mod = self.model.attn_res[self.attn_res_map[key]]
             if use_ckpt:
-                # BlockAttnRes stacks the sources ([N, B, T, D]) and autograd
-                # saves the stack AND its keys-norm per application — ~2N x
-                # 64 MB at 8k, growing with N; over 66 applications that is
-                # ~60 GB and OOMs the 96 GB box. The sources themselves stay
-                # materialized either way (the spec'd O(Nd) bookkeeping), so
-                # checkpoint the computation: recompute is a stack + norm +
-                # N-way softmax, and the inputs are already live.
+                # AttnRes runs per-source (no [N,B,T,D] stack — that was
+                # bring-up OOM #5), but it still recomputes N key-norms per
+                # application; the sources themselves stay materialized
+                # either way (the spec'd O(Nd) bookkeeping), so checkpoint
+                # the computation: inputs are already live, recompute is
+                # cheap norms + an N-way softmax.
                 return torch.utils.checkpoint.checkpoint(mod, sources, h, use_reentrant=False)
             return mod(sources, h)
 
