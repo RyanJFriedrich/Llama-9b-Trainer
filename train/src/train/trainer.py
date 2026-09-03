@@ -57,7 +57,14 @@ def lr_at(step: int, cfg: TrainConfig) -> float:
 
 
 def _batch_tensors(seqs: list[dict[str, torch.Tensor]], device) -> dict[str, torch.Tensor]:
-    return {k: torch.stack([s[k] for s in seqs]).to(device) for k in seqs[0]}
+    non_blocking = device != "cpu" and torch.cuda.is_available()
+    res = {}
+    for k in seqs[0]:
+        t = torch.stack([s[k] for s in seqs])
+        if non_blocking:
+            t = t.pin_memory()
+        res[k] = t.to(device, non_blocking=non_blocking)
+    return res
 
 
 class Trainer:
@@ -70,6 +77,8 @@ class Trainer:
         self.log_file = cfg.log_filename or str(self.out_dir / "train.log")
 
         torch.manual_seed(cfg.seed)
+        if torch.cuda.is_available():
+            torch.set_float32_matmul_precision("high")
 
         model_cfg = load_config(cfg.model)
         self.model = RefitModel(model_cfg)
@@ -93,9 +102,15 @@ class Trainer:
         # [B, seq_len], so each run builds one static graph. (Anneal ablation
         # runs mutate attn.window between steps → recompiles; not a target
         # combo.)
-        self._fwd = (
-            torch.compile(self.model, dynamic=False) if cfg.torch_compile else self.model
-        )
+        if cfg.torch_compile:
+            try:
+                import torch._inductor.config as inductor_config
+                inductor_config.max_autotune = True
+            except Exception:
+                pass
+            self._fwd = torch.compile(self.model, dynamic=False)
+        else:
+            self._fwd = self.model
 
         # Frozen donor furniture (owner decision 2026-09-03, TrainConfig
         # freeze_embeddings): embed_tokens and lm_head keep the donor's fixed
