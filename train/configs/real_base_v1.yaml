@@ -38,6 +38,7 @@ torch_compile: true        # one static graph (fixed [1, 8192]); first step
                            # compiles for a few minutes — that is normal
 optimizer: adamw8bit
 grad_checkpointing: true
+mem_debug: true
 seed: 0
 init: prebuilt             # the HF base checkpoint round-trip
 prebuilt_path: exports/llama-9b-base-v1
