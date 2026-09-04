@@ -56,6 +56,32 @@ def lr_at(step: int, cfg: TrainConfig) -> float:
     return cfg.lr * (cfg.min_lr_ratio + (1.0 - cfg.min_lr_ratio) * cos)
 
 
+def _format_eta(seconds: float) -> str:
+    if seconds <= 0 or math.isinf(seconds) or math.isnan(seconds):
+        return "--"
+    sec = int(round(seconds))
+    d, sec = divmod(sec, 86400)
+    h, sec = divmod(sec, 3600)
+    m, s = divmod(sec, 60)
+    if d > 0:
+        return f"{d}d {h:02d}h"
+    if h > 0:
+        return f"{h}h {m:02d}m"
+    if m > 0:
+        return f"{m}m {s:02d}s"
+    return f"{s}s"
+
+
+def _format_tokens(n: int) -> str:
+    if n >= 1_000_000_000:
+        return f"{n / 1e9:.2f}B"
+    if n >= 1_000_000:
+        return f"{n / 1e6:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1e3:.1f}K"
+    return str(n)
+
+
 def _batch_tensors(seqs: list[dict[str, torch.Tensor]], device) -> dict[str, torch.Tensor]:
     non_blocking = device != "cpu" and torch.cuda.is_available()
     res = {}
@@ -192,6 +218,11 @@ class Trainer:
                     f"double-counts the fold; consider alpha=1.0 for v1-only runs",
                     filename=self.log_file, print_console=True)
         self.step = 0
+        self.loss_ema: Optional[float] = None
+        self.tok_s_ema: Optional[float] = None
+        self.step_time_ema: Optional[float] = None
+        self.total_hw_tokens: int = 0
+        self.total_loss_tokens: int = 0
 
         log(f"run metadata: config={json.dumps(cfg.to_dict())} seed={cfg.seed} "
             f"code_hash={code_hash()}", filename=self.log_file)
@@ -225,7 +256,8 @@ class Trainer:
         accum = cfg.grad_accum
         batch_seqs: list[dict[str, torch.Tensor]] = []
         t0 = time.time()
-        n_tokens = 0
+        last_log_time = t0
+        last_log_hw_tokens = self.total_hw_tokens
 
         it = iter(self.loader.iter_sequences())
         # Resume-safe data cursor: the window order is deterministic (seeded),
@@ -248,6 +280,7 @@ class Trainer:
             if len(batch_seqs) < cfg.batch_size * accum:
                 continue
 
+            step_t0 = time.time()
             state = self.anneal.apply(self.step)
             for group in self.optimizer.param_groups:
                 group["lr"] = lr_at(self.step, cfg)
@@ -300,7 +333,8 @@ class Trainer:
                     # equivalent step (below), never per micro-batch.
                     self.row_optimizer.accumulate(gb)
                 loss_val += loss.item()
-                n_tokens += int(batch["loss_mask"].sum())
+                self.total_hw_tokens += batch["tokens"].numel()
+                self.total_loss_tokens += int(batch["loss_mask"].sum())
 
             if cfg.precision == "fp8":
                 clear_model_fp8_weights(self.model)
@@ -333,19 +367,41 @@ class Trainer:
                     lr=lr_at(self.step, cfg) * self.engram_cfg.lr_mult
                 )
             self.step += 1
+            step_time = max(time.time() - step_t0, 1e-6)
+            hw_tok_step = cfg.batch_size * cfg.seq_len * accum
+            inst_tok_s = hw_tok_step / step_time
+
+            # Telemetry updates: EMA smoothing for loss and throughput
+            if self.loss_ema is None:
+                self.loss_ema = loss_val
+            else:
+                self.loss_ema = 0.9 * self.loss_ema + 0.1 * loss_val
+
+            # Avoid anchoring EMA on Step 1 compile time when torch.compile is active
+            if self.step_time_ema is None or (self.step == 2 and cfg.torch_compile):
+                self.step_time_ema = step_time
+                self.tok_s_ema = inst_tok_s
+            else:
+                self.step_time_ema = 0.9 * self.step_time_ema + 0.1 * step_time
+                self.tok_s_ema = 0.9 * self.tok_s_ema + 0.1 * inst_tok_s
+
             batch_seqs = []
 
             if self.step % cfg.log_every == 0 or self.step == 1:
-                # TODO(metrics pipeline): Fix tok/s and token accounting:
-                # 1. Rolling interval rate: Current tok_s is a global cumulative average
-                #    since train() start (t0), which is contaminated by initial JIT compilation
-                #    on Step 1 and lags recent throughput. Implement interval-based tracking
-                #    measuring tokens / delta_t across the last `log_every` steps.
-                # 2. Accumulation & hardware vs. loss tokens:
-                #    `n_tokens` accumulates `loss_mask.sum()` across each micro-batch in `accum`.
-                #    Separate raw hardware throughput (total tokens processed =
-                #    batch_size * seq_len * accum per step) from effective loss-evaluated tokens.
-                tok_s = n_tokens / max(time.time() - t0, 1e-9)
+                now = time.time()
+                interval_dt = max(now - last_log_time, 1e-6)
+                interval_hw_tok = self.total_hw_tokens - last_log_hw_tokens
+                interval_tok_s = interval_hw_tok / interval_dt
+                last_log_time = now
+                last_log_hw_tokens = self.total_hw_tokens
+
+                rem_steps = max(steps - self.step, 0)
+                eta = _format_eta(rem_steps * (self.step_time_ema or step_time))
+                pct = (self.step / steps) * 100.0
+
+                tok_s_display = interval_tok_s if self.step > 1 else inst_tok_s
+                tok_s_ema_val = self.tok_s_ema if self.tok_s_ema is not None else tok_s_display
+
                 eng = ""
                 if self.engram_cfg is not None:
                     tel = self.row_optimizer.pop_telemetry()
@@ -355,10 +411,12 @@ class Trainer:
                     mem = (f" mem_alloc {torch.cuda.memory_allocated() / 2**30:.2f}GiB"
                            f" reserved {torch.cuda.memory_reserved() / 2**30:.2f}GiB"
                            f" peak {torch.cuda.max_memory_allocated() / 2**30:.2f}GiB")
-                log(f"step {self.step}/{steps} loss {loss_val:.4f} "
+                log(f"step {self.step}/{steps} ({pct:.1f}%) loss {loss_val:.4f} (ema {self.loss_ema:.4f}) "
                     f"lr {lr_at(self.step - 1, cfg):.2e} gnorm {grad_norm:.3f} "
+                    f"tok/s {tok_s_display:.0f} (ema {tok_s_ema_val:.0f}) "
+                    f"eta {eta} tok {_format_tokens(self.total_hw_tokens)} "
                     f"window {state['window']} "
-                    f"theta {state['theta_progress']:.3f} tok/s {tok_s:.0f}{eng}{mem}",
+                    f"theta {state['theta_progress']:.3f}{eng}{mem}",
                     filename=self.log_file, print_console=True)
 
             if self.step % cfg.checkpoint_every == 0 or self.step == steps:
@@ -375,6 +433,13 @@ class Trainer:
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             "config": self.cfg.to_dict(),
             "code_hash": code_hash(),
+            "telemetry": {
+                "loss_ema": self.loss_ema,
+                "tok_s_ema": self.tok_s_ema,
+                "step_time_ema": self.step_time_ema,
+                "total_hw_tokens": self.total_hw_tokens,
+                "total_loss_tokens": self.total_loss_tokens,
+            },
         }
         if self.engram_cfg is not None:
             # I9: host tables + sparse row optimizer are part of the
@@ -398,5 +463,12 @@ class Trainer:
         if self.engram_cfg is not None:
             self.model.engram_tables.load_state_dict(ckpt["engram_tables"])
             self.row_optimizer.load_state_dict(ckpt["engram_row_opt"])
+        if "telemetry" in ckpt:
+            telem = ckpt["telemetry"]
+            self.loss_ema = telem.get("loss_ema")
+            self.tok_s_ema = telem.get("tok_s_ema")
+            self.step_time_ema = telem.get("step_time_ema")
+            self.total_hw_tokens = telem.get("total_hw_tokens", 0)
+            self.total_loss_tokens = telem.get("total_loss_tokens", 0)
         log(f"checkpoint loaded: {path} (resuming at step {self.step})",
             filename=self.log_file, print_console=True)
