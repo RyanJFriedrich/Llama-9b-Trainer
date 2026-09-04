@@ -135,6 +135,7 @@ class FP8Linear(nn.Linear):
         self._cached_wq: Optional[torch.Tensor] = None
         self._cached_sw: Optional[torch.Tensor] = None
 
+    @torch.no_grad()
     def cache_fp8_weight(self) -> None:
         wb = self.weight.to(torch.bfloat16)
         self._cached_wq, self._cached_sw = _quantize(wb, E4M3, E4M3_MAX)
@@ -149,6 +150,7 @@ class FP8Linear(nn.Linear):
         return out.reshape(*shape[:-1], self.weight.shape[0])
 
 
+@torch.no_grad()
 def cache_model_fp8_weights(model: nn.Module) -> None:
     """Pre-quantize FP8Linear weights once per step across micro-batches."""
     for mod in model.modules():
