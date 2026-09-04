@@ -17,6 +17,7 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--config", required=True)
     p.add_argument("--resume", default=None, help="checkpoint path to resume from")
+    p.add_argument("--max-steps", type=int, default=None, help="override step count ceiling for short test runs / clean interrupts")
     args = p.parse_args()
 
     cfg = load_train_config(args.config)
@@ -41,7 +42,7 @@ def main() -> None:
         trainer.load_checkpoint(args.resume)
 
     try:
-        trainer.train()
+        trainer.train(steps=args.max_steps)
     except KeyboardInterrupt:
         log("\nKeyboardInterrupt caught — saving emergency checkpoint before exit...",
             filename=trainer.log_file, print_console=True)
