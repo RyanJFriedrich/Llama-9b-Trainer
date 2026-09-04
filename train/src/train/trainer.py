@@ -461,11 +461,17 @@ class Trainer:
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.step = ckpt["step"]
         self.model.set_anneal_state(**ckpt["anneal_state"])
-        torch.set_rng_state(ckpt["rng"])
+        rng = ckpt["rng"]
+        if isinstance(rng, torch.Tensor):
+            rng = rng.cpu()
+        torch.set_rng_state(rng)
         if ckpt.get("cuda_rng") and torch.cuda.is_available():
-            torch.cuda.set_rng_state_all(ckpt["cuda_rng"])
+            cuda_rng = [s.cpu() if isinstance(s, torch.Tensor) else s for s in ckpt["cuda_rng"]]
+            torch.cuda.set_rng_state_all(cuda_rng)
         if self.engram_cfg is not None:
-            self.model.engram_tables.load_state_dict(ckpt["engram_tables"])
+            tables_sd = {k: (v.cpu() if isinstance(v, torch.Tensor) else v)
+                         for k, v in ckpt["engram_tables"].items()}
+            self.model.engram_tables.load_state_dict(tables_sd)
             self.row_optimizer.load_state_dict(ckpt["engram_row_opt"])
         if "telemetry" in ckpt:
             telem = ckpt["telemetry"]
