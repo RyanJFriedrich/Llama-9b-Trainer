@@ -226,4 +226,9 @@ class EngramTables:
                     f"config shape {tuple(self.rows[key].shape)}"
                 )
             self.rows[key].copy_(rows)
-            self.touch[key][:] = sd["touch"][ks].numpy()
+            touch = sd["touch"][ks]
+            if isinstance(touch, torch.Tensor):
+                touch = touch.cpu().numpy()
+            elif not isinstance(touch, np.ndarray):
+                touch = np.asarray(touch)
+            self.touch[key][:] = touch

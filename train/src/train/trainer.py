@@ -456,7 +456,10 @@ class Trainer:
         return path
 
     def load_checkpoint(self, path: str | Path) -> None:
-        ckpt = torch.load(path, map_location=self.device, weights_only=False)
+        # Load to host RAM first: avoids a ~50 GB VRAM allocation spike during torch.load
+        # and ensures host-resident state (RNG, Engram tables, row optimizer) stays on CPU.
+        # model.load_state_dict and optimizer.load_state_dict transfer to GPU parameters automatically.
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
         self.model.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
         self.step = ckpt["step"]
@@ -469,9 +472,7 @@ class Trainer:
             cuda_rng = [s.cpu() if isinstance(s, torch.Tensor) else s for s in ckpt["cuda_rng"]]
             torch.cuda.set_rng_state_all(cuda_rng)
         if self.engram_cfg is not None:
-            tables_sd = {k: (v.cpu() if isinstance(v, torch.Tensor) else v)
-                         for k, v in ckpt["engram_tables"].items()}
-            self.model.engram_tables.load_state_dict(tables_sd)
+            self.model.engram_tables.load_state_dict(ckpt["engram_tables"])
             self.row_optimizer.load_state_dict(ckpt["engram_row_opt"])
         if "telemetry" in ckpt:
             telem = ckpt["telemetry"]
