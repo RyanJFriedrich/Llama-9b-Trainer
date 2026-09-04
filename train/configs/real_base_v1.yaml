@@ -32,6 +32,7 @@ temperature: 1.0
 loss_chunk_size: 512
 
 bf16: true
+master_dtype: bf16             # master weights in bf16: saves 16.5 GB VRAM
 precision: fp8             # standard path, post-overlay-acceptance
 torch_compile: true        # one static graph (fixed [1, 8192]); first step
                            # compiles for a few minutes — that is normal

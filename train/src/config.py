@@ -610,6 +610,8 @@ class TrainConfig:
     loss_chunk_size: int = 512
 
     bf16: bool = True  # bf16 compute / fp32 masters
+    # Master weight storage dtype: "fp32" (default/dev fallback) | "bf16" (production: saves 16.5 GB VRAM)
+    master_dtype: str = "fp32"
     # spec §4: GEMM precision for attention/FFN only. "fp8" swaps those
     # Linears to FP8 GEMMs (fp8.py); embeddings/lm_head/norms/AttnRes/loss
     # stay bf16/fp32; FP8 weight storage remains rejected.
@@ -677,7 +679,7 @@ class TrainConfig:
                 "model", "data_shards", "seq_len", "shuffle", "data_seed",
                 "steps", "batch_size", "grad_accum", "lr", "min_lr_ratio",
                 "warmup_steps", "cosine_steps", "weight_decay", "grad_clip", "beta1", "beta2",
-                "alpha", "temperature", "loss_chunk_size", "bf16", "precision",
+                "alpha", "temperature", "loss_chunk_size", "bf16", "master_dtype", "precision",
                 "torch_compile", "mem_debug", "autocast_cache", "optimizer",
                 "grad_checkpointing", "seed", "init", "donor_path", "prebuilt_path",
                 "freeze_embeddings", "grad_dtype",
@@ -707,6 +709,7 @@ class TrainConfig:
             temperature=d.get("temperature", 1.0),
             loss_chunk_size=d.get("loss_chunk_size", 512),
             bf16=d.get("bf16", True),
+            master_dtype=d.get("master_dtype", "fp32"),
             precision=d.get("precision", "bf16"),
             torch_compile=d.get("torch_compile", False),
             mem_debug=d.get("mem_debug", False),
@@ -746,6 +749,8 @@ class TrainConfig:
             raise ValueError("optimizer must be 'adamw' or 'adamw8bit'")
         if self.precision not in ("bf16", "fp8"):
             raise ValueError("precision must be 'bf16' or 'fp8' (spec §4)")
+        if self.master_dtype not in ("bf16", "fp32"):
+            raise ValueError("master_dtype must be 'bf16' or 'fp32'")
         if self.grad_dtype not in ("bf16", "fp32"):
             raise ValueError("grad_dtype must be 'bf16' or 'fp32'")
         if self.init not in ("warm", "scratch", "prebuilt"):
@@ -775,6 +780,7 @@ class TrainConfig:
             "temperature": self.temperature,
             "loss_chunk_size": self.loss_chunk_size,
             "bf16": self.bf16,
+            "master_dtype": self.master_dtype,
             "precision": self.precision,
             "torch_compile": self.torch_compile,
             "mem_debug": self.mem_debug,

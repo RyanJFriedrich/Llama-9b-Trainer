@@ -111,7 +111,11 @@ class Trainer:
         # Warm start (cfg.init == "warm") is applied by the caller/script via
         # tools/warm_start.py — it owns the donor path and the accounting
         # report. See scripts/train_phase0.py.
-        self.model.to(self.device)  # fp32 masters; bf16 via autocast
+        self.model.to(self.device)
+        if cfg.master_dtype == "bf16":
+            self.model.to(dtype=torch.bfloat16)
+            log("master_dtype: bf16 master weights (saving ~16.5 GB VRAM)",
+                filename=self.log_file, print_console=True)
         self.model.grad_checkpointing = cfg.grad_checkpointing
         if cfg.precision == "fp8":
             # spec §4: attention/FFN GEMMs only; weight Parameter objects are

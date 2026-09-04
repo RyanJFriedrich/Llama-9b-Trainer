@@ -313,3 +313,32 @@ def test_donor_scorer_shard(tmp_path):
         hidden = model(torch.tensor([docs[0]]), return_hidden=True)
         ref = (hidden[0, 0].float() @ model.lm_head.weight.float().T).argmax().item()
     assert int(sh.topk_idx[0, 0]) == ref
+
+
+def test_bf16_master_weights_and_fp32_resume(tmp_path):
+    """master_dtype='bf16' casts all model parameters to bfloat16. Loading an
+    fp32 checkpoint into a bf16 model automatically casts weights to bfloat16."""
+    shard = _learnable_shard(tmp_path, "s")
+    # 1. Run 2 steps with fp32 masters to produce an fp32 checkpoint
+    cfg_fp32 = _train_cfg(tmp_path / "fp32", [str(shard)], steps=2)
+    cfg_fp32["master_dtype"] = "fp32"
+    t_fp32 = Trainer(TrainConfig.from_dict(cfg_fp32), device="cpu")
+    assert all(p.dtype == torch.float32 for p in t_fp32.model.parameters())
+    t_fp32.train()
+    ckpt_path = t_fp32.save_checkpoint("fp32_ckpt.pt")
+
+    # 2. Build trainer with master_dtype='bf16'
+    cfg_bf16 = _train_cfg(tmp_path / "bf16", [str(shard)], steps=4)
+    cfg_bf16["master_dtype"] = "bf16"
+    t_bf16 = Trainer(TrainConfig.from_dict(cfg_bf16), device="cpu")
+    assert all(p.dtype == torch.bfloat16 for p in t_bf16.model.parameters())
+
+    # 3. Resume from fp32 checkpoint into bf16 model
+    t_bf16.load_checkpoint(ckpt_path)
+    assert all(p.dtype == torch.bfloat16 for p in t_bf16.model.parameters())
+    assert t_bf16.step == 2
+
+    # 4. Train remaining steps in bf16
+    t_bf16.train()
+    assert t_bf16.step == 4
+    assert all(p.dtype == torch.bfloat16 for p in t_bf16.model.parameters())
