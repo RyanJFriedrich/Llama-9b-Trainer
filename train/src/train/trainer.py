@@ -329,9 +329,15 @@ class Trainer:
             batch_seqs = []
 
             if self.step % cfg.log_every == 0 or self.step == 1:
-                # TODO(known issue, owner 2026-09-03): tok/s is a cumulative
-                # average since train() start (t0/n_tokens never reset), not
-                # a per-log-interval rate — it lags the true recent tok/s.
+                # TODO(metrics pipeline): Fix tok/s and token accounting:
+                # 1. Rolling interval rate: Current tok_s is a global cumulative average
+                #    since train() start (t0), which is contaminated by initial JIT compilation
+                #    on Step 1 and lags recent throughput. Implement interval-based tracking
+                #    measuring tokens / delta_t across the last `log_every` steps.
+                # 2. Accumulation & hardware vs. loss tokens:
+                #    `n_tokens` accumulates `loss_mask.sum()` across each micro-batch in `accum`.
+                #    Separate raw hardware throughput (total tokens processed =
+                #    batch_size * seq_len * accum per step) from effective loss-evaluated tokens.
                 tok_s = n_tokens / max(time.time() - t0, 1e-9)
                 eng = ""
                 if self.engram_cfg is not None:
