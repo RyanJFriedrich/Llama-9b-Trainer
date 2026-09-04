@@ -42,7 +42,7 @@ def main() -> None:
         trainer.load_checkpoint(args.resume)
 
     try:
-        trainer.train(steps=args.max_steps)
+        trainer.train(max_steps=args.max_steps)
     except KeyboardInterrupt:
         log("\nKeyboardInterrupt caught — saving emergency checkpoint before exit...",
             filename=trainer.log_file, print_console=True)
