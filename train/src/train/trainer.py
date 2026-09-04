@@ -269,6 +269,10 @@ class Trainer:
                     for a in range(accum)
                 ]
 
+            if cfg.precision == "fp8":
+                from train.src.train.fp8 import cache_model_fp8_weights, clear_model_fp8_weights
+                cache_model_fp8_weights(self.model)
+
             for a in range(accum):
                 chunk = batch_seqs[a * cfg.batch_size:(a + 1) * cfg.batch_size]
                 batch = _batch_tensors(chunk, self.device)
@@ -297,6 +301,9 @@ class Trainer:
                     self.row_optimizer.accumulate(gb)
                 loss_val += loss.item()
                 n_tokens += int(batch["loss_mask"].sum())
+
+            if cfg.precision == "fp8":
+                clear_model_fp8_weights(self.model)
 
             if self.cfg.grad_dtype == "bf16":
                 # bf16 grads: clip via an fp32-transient norm (a bf16

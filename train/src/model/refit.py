@@ -157,7 +157,18 @@ class RefitAttention(nn.Module):
         k = repeat_kv(k, self.num_key_value_groups)
         v = repeat_kv(v, self.num_key_value_groups)
 
-        # Query-chunked attention (ModelConfig.attn_query_chunk). The math is
+        # Global and Gather layers have no sink logits and attend over the full
+        # causal span with Partial-RoPE (applied above). Use native SDPA
+        # (FlashAttention-2 / cuDNN SM120) with O(1) score memory and hardware fusion.
+        if self.layer_type in ("global", "gather") and self.probe is None:
+            attn_output = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, is_causal=True
+            )
+            attn_output = attn_output.transpose(1, 2).contiguous().view(bsz, seq_len, -1)
+            return self.o_proj(attn_output)
+
+        # Query-chunked attention (ModelConfig.attn_query_chunk) for SWA layers
+        # with learned sink logits (or when eval probes are active). The math is
         # unchanged — softmax denominators are per query row over ALL keys —
         # but the [H, T, S] fp32 score/softmax working set is bounded to one
         # chunk at a time. Under autograd each chunk's core runs inside its
@@ -405,14 +416,27 @@ class RefitModel(nn.Module):
                 return torch.utils.checkpoint.checkpoint(mod, sources, h, use_reentrant=False)
             return mod(sources, h)
 
-        # Checkpointed sublayer = RMSNorm + attn/MLP as one region. Defined
-        # with explicit args (NOT a loop-closure lambda — a lambda would bind
-        # the LAST iteration's modules at backward-recompute time and torch
-        # raises CheckpointError on the mismatched saves).
-        def _normed_sublayer(norm, sublayer, h_in, mask=None):
-            if mask is None:
-                return sublayer(norm(h_in))
-            return sublayer(norm(h_in), mask)
+        # Checkpointed layer block = AttnRes + Attention + AttnRes + MLP as one region.
+        # Coarsening from 66 sublayer boundaries to 33 block boundaries allows PyTorch
+        # Inductor to fuse RMSNorms, linear projections, and SwiGLU without graph breaks.
+        def _layer_block(layer, ar_pre_attn, ar_pre_mlp, h_in, partial_in, sources, mask):
+            if ar_pre_attn is not None:
+                x1 = ar_pre_attn(sources, h_in)
+            else:
+                x1 = h_in
+            d1 = layer.self_attn(layer.input_layernorm(x1), mask)
+            h_mid = h_in + d1
+            partial_mid = partial_in + d1
+
+            if ar_pre_mlp is not None:
+                sources_mlp = list(sources[:-1]) + [partial_mid]
+                x2 = ar_pre_mlp(sources_mlp, h_mid)
+            else:
+                x2 = h_mid
+            d2 = layer.mlp(layer.post_attention_layernorm(x2))
+            h_out = h_mid + d2
+            partial_out = partial_mid + d2
+            return h_out, partial_out
 
         if self.grad_checkpointing and self.training and torch.is_grad_enabled():
             h = h.requires_grad_(True)
@@ -421,37 +445,32 @@ class RefitModel(nn.Module):
             attn = layer.self_attn
             mask = masks[(attn.layer_type, attn.window if attn.layer_type == "swa" else None)]
 
-            # Gradient checkpointing (M4): recompute the attention/MLP
-            # sublayers in backward instead of holding their activations.
-            # The checkpointed region includes the sublayer's input RMSNorm —
-            # its fp32 upcast intermediates (~0.3 GB at 8k) would otherwise be
-            # saved at all 66 application points (~20 GB; the #2 bring-up OOM
-            # after the AttnRes stack fix). The AttnRes sources
-            # (blocks/partial) stay materialized — they are the spec'd O(Nd)
-            # bookkeeping, N <= 10.
             ckpt = (
                 self.grad_checkpointing and self.training and torch.is_grad_enabled()
             )
 
-            x = apply_attn_res(i, "pre_attn", ckpt)
-            if ckpt:
-                d1 = torch.utils.checkpoint.checkpoint(
-                    _normed_sublayer, layer.input_layernorm, attn, x, mask,
-                    use_reentrant=False)
-            else:
-                d1 = attn(layer.input_layernorm(x), mask)
-            h = h + d1
-            partial = partial + d1
+            ar_pre_attn = (
+                self.model.attn_res[self.attn_res_map[(i, "pre_attn")]]
+                if (i, "pre_attn") in self.attn_res_map else None
+            )
+            ar_pre_mlp = (
+                self.model.attn_res[self.attn_res_map[(i, "pre_mlp")]]
+                if (i, "pre_mlp") in self.attn_res_map else None
+            )
+            sources = blocks + [partial]
+            if capture is not None:
+                if (i, "pre_attn") in self.attn_res_map:
+                    capture["attn_res_sources"][(i, "pre_attn")] = [s.detach().clone() for s in sources]
 
-            x = apply_attn_res(i, "pre_mlp", ckpt)
-            if ckpt:
-                d2 = torch.utils.checkpoint.checkpoint(
-                    _normed_sublayer, layer.post_attention_layernorm, layer.mlp,
-                    x, use_reentrant=False)
+            if ckpt and capture is None:
+                h, partial = torch.utils.checkpoint.checkpoint(
+                    _layer_block, layer, ar_pre_attn, ar_pre_mlp, h, partial, sources, mask,
+                    use_reentrant=False
+                )
             else:
-                d2 = layer.mlp(layer.post_attention_layernorm(x))
-            h = h + d2
-            partial = partial + d2
+                h, partial = _layer_block(
+                    layer, ar_pre_attn, ar_pre_mlp, h, partial, sources, mask
+                )
 
             # Engram injection (spec §3.6): single delta at the output of
             # layer injection_point, registered into the running partial

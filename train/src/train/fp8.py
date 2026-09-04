@@ -78,12 +78,15 @@ class _FP8GEMM(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, x: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+    def forward(ctx, x: torch.Tensor, w: torch.Tensor, cached_wq: Optional[torch.Tensor] = None, cached_sw: Optional[torch.Tensor] = None) -> torch.Tensor:
         emulate = not fp8_gemm_available() if x.is_cuda else True
         xb = x.to(torch.bfloat16)
-        wb = w.to(torch.bfloat16)
         xq, sx = _quantize(xb, E4M3, E4M3_MAX)
-        wq, sw = _quantize(wb, E4M3, E4M3_MAX)
+        if cached_wq is not None and cached_sw is not None:
+            wq, sw = cached_wq, cached_sw
+        else:
+            wb = w.to(torch.bfloat16)
+            wq, sw = _quantize(wb, E4M3, E4M3_MAX)
         ctx.save_for_backward(xq, wq, sx, sw)
         ctx.emulate = emulate
         ctx.x_dtype, ctx.w_dtype = x.dtype, w.dtype
@@ -120,17 +123,44 @@ class _FP8GEMM(torch.autograd.Function):
             x_cm = xq_m.t().contiguous().t()
             gw = torch._scaled_mm(gt_rm, x_cm, scale_a=sg, scale_b=sx,
                                   out_dtype=torch.bfloat16, use_fast_accum=True)
-        return gx.to(ctx.x_dtype), gw.to(ctx.w_dtype)
+        return gx.to(ctx.x_dtype), gw.to(ctx.w_dtype), None, None
 
 
 class FP8Linear(nn.Linear):
     """nn.Linear with the GEMM in FP8 (spec §4). Same parameter object and
     state_dict keys as the Linear it replaces."""
 
+    def __init__(self, in_features: int, out_features: int, bias: bool = True) -> None:
+        super().__init__(in_features, out_features, bias=bias)
+        self._cached_wq: Optional[torch.Tensor] = None
+        self._cached_sw: Optional[torch.Tensor] = None
+
+    def cache_fp8_weight(self) -> None:
+        wb = self.weight.to(torch.bfloat16)
+        self._cached_wq, self._cached_sw = _quantize(wb, E4M3, E4M3_MAX)
+
+    def clear_fp8_cache(self) -> None:
+        self._cached_wq = None
+        self._cached_sw = None
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shape = x.shape
-        out = _FP8GEMM.apply(x.reshape(-1, shape[-1]), self.weight)
+        out = _FP8GEMM.apply(x.reshape(-1, shape[-1]), self.weight, self._cached_wq, self._cached_sw)
         return out.reshape(*shape[:-1], self.weight.shape[0])
+
+
+def cache_model_fp8_weights(model: nn.Module) -> None:
+    """Pre-quantize FP8Linear weights once per step across micro-batches."""
+    for mod in model.modules():
+        if isinstance(mod, FP8Linear):
+            mod.cache_fp8_weight()
+
+
+def clear_model_fp8_weights(model: nn.Module) -> None:
+    """Clear cached FP8Linear weights after micro-batch accumulation."""
+    for mod in model.modules():
+        if isinstance(mod, FP8Linear):
+            mod.clear_fp8_cache()
 
 
 def apply_fp8(model: nn.Module) -> int:
