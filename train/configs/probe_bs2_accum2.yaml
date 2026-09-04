@@ -1,0 +1,37 @@
+# PROBE RUN: batch_size=2, grad_accum=2 (owner tuning probe 2026-09-04)
+# Tests throughput and VRAM headroom when doubling micro-batch size to 2 at T=8192
+# (32,768 tok/step). All other hyperparams identical to real_base_v1.yaml.
+model: train/configs/model/llama_9b_engram_v1.yaml
+data_shards: []            # fill: python -m train.scripts.fill_smoke_shards --configs <this file>
+seq_len: 8192
+shuffle: true
+data_seed: 0
+
+steps: 12735
+batch_size: 2              # probed: doubled from 1
+grad_accum: 2              # probed: halved from 4 (maintains 32,768 tok/step)
+lr: 2.0e-4
+min_lr_ratio: 0.1
+warmup_steps: 20
+cosine_steps: 200
+weight_decay: 0.1
+grad_clip: 1.0
+
+alpha: 1.0
+temperature: 1.0
+loss_chunk_size: 512
+
+bf16: true
+master_dtype: bf16
+precision: fp8
+torch_compile: true
+optimizer: adamw8bit
+grad_checkpointing: true
+mem_debug: true
+seed: 0
+init: prebuilt
+prebuilt_path: exports/llama-9b-base-v1
+
+out_dir: train/runs/probe_bs2
+checkpoint_every: 10
+log_every: 1
